@@ -6,11 +6,11 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M3 (M2 complete, acceptance passed). Next action: begin M3 (Memory) —
-`ares/core/memory/__init__.py`, `memory/base.py` (BaseMemory, §4.12), then
-`memory/filesystem.py` (FilesystemMemory, grep-based), `plugins/tools/memory_tools.py`
-(§6.1), test_memory.py, and a main.py update to swap the M2 _StubMemory for the real
-FilesystemMemory. Read spec §4.12 first.
+Milestone: M4 (M3 complete, acceptance passed). Next action: begin M4 (Tasks +
+scheduler) — `ares/core/tasks/__init__.py`, `tasks/store.py` (TaskStore, §4.13),
+`plugins/tools/task_tools.py` (§6.2), `plugins/sources/scheduler.py` (§7.2), test,
+and a main.py update to swap the M2 _StubTasks for the real TaskStore + wire the
+scheduler source. Read spec §4.13 and §7.2 first.
 
 ## Ticklist
 
@@ -76,7 +76,7 @@ FilesystemMemory. Read spec §4.12 first.
 - [x] ares/plugins/tools/memory_tools.py
 - [x] tests/test_memory.py  (path escape rejected, non-.md rejected, grep truncation, append vs overwrite, prune_short_term)
 - [x] instance/main.py updated (real FilesystemMemory replaces _StubMemory; MEMORY_TOOLS registered)
-- [ ] M3 acceptance test passed (remember → new session → recall via grep)
+- [x] M3 acceptance test passed (remember → new session → recall via grep)
 
 ### M4 — Tasks + scheduler
 - [ ] ares/core/tasks/__init__.py
