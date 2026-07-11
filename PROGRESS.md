@@ -6,8 +6,8 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M1 (M0 complete, acceptance passed). Next action: begin M1 — create
-`ares/core/event.py` (Priority, Event, EventBus per spec §4.1).
+Milestone: M1 (M0 complete, acceptance passed). Next action: create
+`ares/core/source.py` (BaseSource, emit per spec §4.2).
 
 ## Ticklist
 
@@ -36,7 +36,7 @@ Milestone: M1 (M0 complete, acceptance passed). Next action: begin M1 — create
 - [x] M0 acceptance test passed (spec §10)
 
 ### M1 — Bus + CLI loop (no LLM)
-- [ ] ares/core/event.py
+- [x] ares/core/event.py
 - [ ] ares/core/source.py
 - [ ] ares/core/channel.py
 - [ ] ares/core/session.py
