@@ -143,10 +143,10 @@ first, then PrivStore/tools/source, then the broker (stdlib-only), with the secu
 - [x] ares/plugins/privileges/source.py  (poll for decided requests -> privilege_update events)
 - [x] broker/aresbrokerd.py  (STDLIB ONLY, no ares import, <200 lines, allowlist re-validate)
 - [x] broker/broker.example.json
-- [ ] instance/main.py updated (register privileges plugin + PrivStore service)
-- [ ] tests/test_priv_store.py  (state machine, approve/deny)
-- [ ] tests/test_broker.py  (allowlist accept/reject, argv build never shell=True, no ares import)
-- [ ] tests/test_shell.py  (timeout cap, non-zero exit is ok=True, refuses own-uid in prod)
+- [x] instance/main.py updated (register privileges plugin + PrivStore service + shell tool)
+- [x] tests/test_priv_store.py  (state machine, approve/deny)
+- [x] tests/test_broker.py  (allowlist accept/reject, argv build never shell=True, no ares import)
+- [x] tests/test_shell.py  (timeout cap, non-zero exit is ok=True, refuses own-uid in prod)
 - [ ] M10 acceptance test passed (spec §10)
 
 ### M11 — Web dashboard  (read spec §17 first)

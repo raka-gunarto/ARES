@@ -1,7 +1,8 @@
-"""ARES daemon entrypoint (M9): wires the event bus, CLI and scheduler
+"""ARES daemon entrypoint (M10): wires the event bus, CLI and scheduler
 sources, console channel, push notification channel, memory storage, real
 TaskStore, the real Agent (spec §4.10), voice pipeline (spec §7.4), SIP
-service/source/channels (spec §7.5), and time tools (spec §8) together.
+service/source/channels (spec §7.5), time tools (spec §8), sandboxed shell
+tool (spec §15), and privilege request store/tools/source (spec §16) together.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
 Per M5 scope, CLI source, scheduler source, console channel, push channel
@@ -38,6 +39,15 @@ Per M9, when `time_tools` is enabled in config, time tools (get_weather,
 get_calendar, add_calendar_event) are registered on the tool registry. Time
 tools are enabled by default; this wiring is guarded by the enabled flag
 and only constructs tools without network access at startup.
+
+Per M10, when `shell` is enabled in config, the sandboxed RunShell tool is
+registered via build_shell_tools(). When `privileges` is enabled, PrivStore
+is initialized and placed in services["privileges"], privilege tools
+(request_privilege, get_privilege_requests) are registered, and PrivilegeSource
+is added to supervised sources. Both plugings are wired only when enabled;
+they are fully optional and disabled by default. Spec §14 security boundaries
+are enforced: PrivStore.approve()/deny() are NEVER called from main.py
+(dashboard-only operations).
 
 The dashboard and other plugins do not exist yet and are wired in later
 milestones — their config sections are ignored without error.
@@ -82,10 +92,14 @@ from ares.plugins.sources.voice.intent import IntentFilter
 from ares.plugins.sources.voice.stt import WhisperSTT
 from ares.plugins.sources.voice.source import VoiceSource
 from ares.plugins.sources.voice.vad import SileroVAD
+from ares.plugins.privileges.source import PrivilegeSource
+from ares.plugins.privileges.store import PrivStore
+from ares.plugins.privileges.tools import PRIV_TOOLS
 from ares.plugins.tools.comms_tools import COMMS_TOOLS
 from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
+from ares.plugins.tools.shell_tools import build_shell_tools
 from ares.plugins.tools.task_tools import TASK_TOOLS
 from ares.plugins.tools.time_tools import build_time_tools
 
@@ -190,6 +204,11 @@ async def main(config_path: str) -> None:
     time_config = config.plugins.get("time_tools", {})
     if time_config.get("enabled"):
         for t in build_time_tools(time_config):
+            registry.register(t)
+
+    shell_config = config.plugins.get("shell", {})
+    if shell_config.get("enabled"):
+        for t in build_shell_tools(shell_config):
             registry.register(t)
 
     services: dict[str, object] = {}
@@ -310,6 +329,17 @@ async def main(config_path: str) -> None:
             IntruderHandler(safety_config.get("alarm_entities", []), tasks, services)
         )
 
+    priv_store: PrivStore | None = None
+    priv_config = config.plugins.get("privileges", {})
+    if priv_config.get("enabled"):
+        priv_store = PrivStore(Path(priv_config.get("db_path", "instance/privq.db")))
+        await priv_store.init()
+        services["privileges"] = priv_store
+        for t in PRIV_TOOLS:
+            registry.register(t)
+        priv_source = PrivilegeSource(bus, priv_config, priv_store)
+        sources.append(priv_source)
+
     agent = Agent(
         llm=llm,
         registry=registry,
@@ -326,7 +356,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M9 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M10 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
@@ -348,6 +378,8 @@ async def main(config_path: str) -> None:
         await ha_service.aclose()
     if sip_service is not None:
         await sip_service.aclose()
+    if priv_store is not None:
+        await priv_store.aclose()
 
 
 if __name__ == "__main__":
