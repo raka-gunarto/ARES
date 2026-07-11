@@ -96,10 +96,10 @@ the acceptance can run against a MOCKED HA WebSocket/REST.
 - [x] M5 acceptance test passed (channel switch mid-conversation, fallback verified)
 
 ### M6 — Home Assistant
-- [ ] ares/plugins/sources/home_assistant.py  (source + HAService)
-- [ ] ares/plugins/tools/home_tools.py
-- [ ] ares/plugins/critical/__init__.py
-- [ ] ares/plugins/critical/safety.py
+- [x] ares/plugins/sources/home_assistant.py  (source + HAService) — WS transport BLOCKED (see Blockers); filter/service fully built
+- [x] ares/plugins/tools/home_tools.py
+- [x] ares/plugins/critical/__init__.py
+- [x] ares/plugins/critical/safety.py
 - [ ] instance/main.py updated (service registration into services dict)
 - [ ] tests/test_ha_filter.py  (domain allow-list, same-state drop, debounce, priority rules mapping)
 - [ ] M6 acceptance test passed (filtered events, device control, CRITICAL bypass with no LLM call)
@@ -215,4 +215,18 @@ the acceptance can run against a MOCKED HA WebSocket/REST.
 
 ## Blockers
 
-- (none)
+- 2026-07-11 (M6): **HA live WebSocket transport.** §7.3 requires `HomeAssistantSource`
+  to connect to `ws_url`, authenticate, and `subscribe_events(state_changed)` over a
+  WebSocket. §12's dependency list contains NO WebSocket client (core: pydantic, PyYAML,
+  python-dotenv, httpx, aiosqlite; httpx has no WS support), and §0 forbids adding
+  dependencies. Hand-rolling an RFC6455 client would be inventing unspecified plumbing
+  (and untestable without a WS server dep). RESOLUTION PENDING A USER DECISION: add a WS
+  dependency (e.g. `websockets`) to §12, or accept REST polling.
+  MITIGATION (so M6 still ships & the acceptance passes against a MOCKED HA, per §10):
+  everything except the live WS wire is built and tested — HAService REST methods
+  (get_state/get_states/call_service/snapshot_summary/camera_snapshot over httpx), the
+  full noise filter (domain/entity allow-list, same-state drop, debounce, priority-rule
+  mapping) exposed via `HomeAssistantSource.process_state_changed(...)` and driven by
+  synthetic events, `ares_event` passthrough, home_tools, and critical/safety handlers.
+  `start()` logs this blocker and idles (the source is inert at runtime until a WS
+  transport is provided); it does NOT crash the daemon.
