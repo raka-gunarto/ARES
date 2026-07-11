@@ -7,7 +7,7 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 ## Current
 
 Milestone: M1 (M0 complete, acceptance passed). Next action: create
-`ares/core/source.py` (BaseSource, emit per spec §4.2).
+`ares/core/router.py` (ResponseRouter per spec §4.5), then critical.py, dispatcher.py.
 
 ## Ticklist
 
@@ -37,9 +37,9 @@ Milestone: M1 (M0 complete, acceptance passed). Next action: create
 
 ### M1 — Bus + CLI loop (no LLM)
 - [x] ares/core/event.py
-- [ ] ares/core/source.py
-- [ ] ares/core/channel.py
-- [ ] ares/core/session.py
+- [x] ares/core/source.py
+- [x] ares/core/channel.py
+- [x] ares/core/session.py
 - [ ] ares/core/router.py
 - [ ] ares/core/critical.py
 - [ ] ares/core/dispatcher.py
@@ -177,6 +177,9 @@ Milestone: M1 (M0 complete, acceptance passed). Next action: create
   which is invalid YAML and makes the reference config unparseable. Fixed in our
   `instance/config.yaml` copy to `living_room: { ... }` (matching the `kitchen:` line's
   valid flow-mapping style) so M0 acceptance can load it. Spec file itself untouched.
+- 2026-07-11 (M1): added `class ConfigError(Exception)` to `ares/core/config.py`.
+  §7 says sources raise `ConfigError` from `core.config`, but §4.7 (M0) never listed
+  it, so it was added when the source layer began (not a refactor — a required symbol).
 
 ## Blockers
 

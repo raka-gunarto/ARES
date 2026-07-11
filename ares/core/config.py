@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict
 from ares.core.secrets import BaseSecretStore, SecretNotFound
 
 
+class ConfigError(Exception):
+    """Raised when source configuration is invalid."""
+
+    pass
+
+
 class LLMConfig(BaseModel):
     """LLM service configuration."""
 
