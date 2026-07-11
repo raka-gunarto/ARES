@@ -1,0 +1,178 @@
+# ARES Build Progress
+
+Spec: `ARES-SPEC.md` v1.1. Read spec §0 (rules) before every session. This file
+is the single source of truth for build state. Protocol: spec §11. The
+deployment/security layer is M10–M13; read spec §14 before touching any of it.
+
+## Current
+
+Milestone: M0. Next action: create package `__init__.py` files (ares/core, ares/core/utils) and the utils trio (logging.py, ids.py, text.py).
+
+## Ticklist
+
+### M0 — Skeleton
+- [x] pyproject.toml  (core deps only; extras: voice, sip, calendar, dev — spec §12)
+- [x] .gitignore  (.venv/, .env, instance/tasks/*.db, instance/privq.db, broker.json, updater.json, scratch/, __pycache__, *.pyc, .pytest_cache)
+- [x] .venv created (`python3.11 -m venv .venv`) and `.venv/bin/pip install -e ".[dev]"` succeeds — CLAUDE.md venv rules apply from here on
+- [x] ares/__init__.py
+- [ ] ares/core/__init__.py
+- [ ] ares/core/utils/__init__.py
+- [ ] ares/core/utils/logging.py
+- [ ] ares/core/utils/ids.py
+- [ ] ares/core/utils/text.py
+- [ ] ares/core/secrets.py
+- [ ] ares/core/config.py  (full Pydantic model tree per spec §8)
+- [ ] instance/.env.example  (every !secret key from spec §8)
+- [ ] instance/config.yaml  (copy of spec §8 example)
+- [ ] instance/memory/INDEX.md  (verbatim from spec §9)
+- [ ] instance/memory/long-term/preferences.md
+- [ ] instance/memory/long-term/people.md
+- [ ] instance/memory/long-term/routines.md
+- [ ] instance/memory/long-term/home.md
+- [ ] instance/memory/short-term/.gitkeep
+- [ ] instance/tasks/.gitkeep
+- [ ] tests/test_config.py  (!secret resolution, SecretNotFound, unknown top-level key rejected)
+- [ ] M0 acceptance test passed (spec §10)
+
+### M1 — Bus + CLI loop (no LLM)
+- [ ] ares/core/event.py
+- [ ] ares/core/source.py
+- [ ] ares/core/channel.py
+- [ ] ares/core/session.py
+- [ ] ares/core/router.py
+- [ ] ares/core/critical.py
+- [ ] ares/core/dispatcher.py
+- [ ] ares/plugins/__init__.py
+- [ ] ares/plugins/sources/__init__.py
+- [ ] ares/plugins/sources/cli.py
+- [ ] ares/plugins/channels/__init__.py
+- [ ] ares/plugins/channels/console.py
+- [ ] instance/main.py  (wiring + source supervisor + echo agent stub)
+- [ ] tests/test_session.py  (timeout clears history, history trim, touch channel mapping)
+- [ ] tests/test_dispatcher.py  (per-user serialisation, LOW drop when busy, HIGH front-of-queue)
+- [ ] M1 acceptance test passed (echo over CLI, !quit clean exit)
+
+### M2 — Real agent
+- [ ] ares/core/llm/__init__.py
+- [ ] ares/core/llm/client.py
+- [ ] ares/core/tool.py
+- [ ] ares/core/prompt.py
+- [ ] ares/core/agent.py
+- [ ] ares/plugins/tools/__init__.py
+- [ ] ares/plugins/tools/core_tools.py  (all six core tools, spec §5)
+- [ ] instance/main.py updated (real Agent replaces echo stub)
+- [ ] tests/test_tool_registry.py  (search scoring, core/non-core, to_oai_schema)
+- [ ] tests/test_agent.py  (mocked LLM: tool loop, budget exhaustion, forced speak on user input)
+- [ ] M2 acceptance test passed (live conversation over CLI via speak tool)
+
+### M3 — Memory
+- [ ] ares/core/memory/__init__.py
+- [ ] ares/core/memory/base.py
+- [ ] ares/core/memory/filesystem.py
+- [ ] ares/plugins/tools/memory_tools.py
+- [ ] tests/test_memory.py  (path escape rejected, non-.md rejected, grep truncation, append vs overwrite, prune_short_term)
+- [ ] M3 acceptance test passed (remember → new session → recall via grep)
+
+### M4 — Tasks + scheduler
+- [ ] ares/core/tasks/__init__.py
+- [ ] ares/core/tasks/store.py
+- [ ] ares/plugins/tools/task_tools.py
+- [ ] ares/plugins/sources/scheduler.py
+- [ ] tests/test_task_store.py  (CRUD, list_due boundary, close sets resolution/closed_at, type CHECK)
+- [ ] M4 acceptance test passed (2-minute reminder fires as HIGH task_due, spoken, closed)
+
+### M5 — Sessions & routing across channels
+- [ ] ares/plugins/channels/push_ntfy.py
+- [ ] tests/test_router.py  (delivery-time channel read, PUSH fallback on deliver False, notify path)
+- [ ] M5 acceptance test passed (channel switch mid-conversation, fallback verified)
+
+### M6 — Home Assistant
+- [ ] ares/plugins/sources/home_assistant.py  (source + HAService)
+- [ ] ares/plugins/tools/home_tools.py
+- [ ] ares/plugins/critical/__init__.py
+- [ ] ares/plugins/critical/safety.py
+- [ ] instance/main.py updated (service registration into services dict)
+- [ ] tests/test_ha_filter.py  (domain allow-list, same-state drop, debounce, priority rules mapping)
+- [ ] M6 acceptance test passed (filtered events, device control, CRITICAL bypass with no LLM call)
+
+### M7 — Voice
+- [ ] ares/plugins/sources/voice/__init__.py
+- [ ] ares/plugins/sources/voice/vad.py
+- [ ] ares/plugins/sources/voice/stt.py
+- [ ] ares/plugins/sources/voice/intent.py
+- [ ] ares/plugins/sources/voice/source.py
+- [ ] ares/plugins/channels/voice_tts.py
+- [ ] tests/test_voice_config.py  (import-level + config validation only, per spec §10)
+- [ ] M7 acceptance test passed (wake word → reply in room, ambient dropped, VAD muted during TTS)
+
+### M8 — SIP
+- [ ] ares/plugins/sip/__init__.py
+- [ ] ares/plugins/sip/client.py
+- [ ] ares/plugins/sip/source.py
+- [ ] ares/plugins/channels/sip_message.py
+- [ ] ares/plugins/channels/sip_call.py
+- [ ] ares/plugins/tools/comms_tools.py
+- [ ] tests/test_sip_config.py  (import-level + config validation only)
+- [ ] M8 acceptance test passed (MESSAGE round-trip, inbound call conversation, place_call)
+
+### M9 — Time tools + hardening
+- [ ] ares/plugins/tools/time_tools.py
+- [ ] Source supervisor restart/backoff verified (kill socket test)
+- [ ] Graceful shutdown audit (Ctrl-C exits < 5 s, tasks cancelled, DB closed)
+- [ ] README.md  (install incl. Piper/PJSIP, config, running, adding a plugin)
+- [ ] M9 acceptance test passed (weather e2e, restart observed, clean shutdown)
+
+### M10 — Sandboxed shell + privilege queue + broker  (read spec §14, §15, §16 first)
+- [ ] ares/plugins/tools/shell_tools.py  (run_shell; runs as ares-sbx in prod, never as ares)
+- [ ] ares/plugins/privileges/__init__.py
+- [ ] ares/plugins/privileges/store.py  (PrivStore; approve/deny NOT on tool surface)
+- [ ] ares/plugins/privileges/tools.py  (request_privilege, get_privilege_requests)
+- [ ] ares/plugins/privileges/source.py  (poll for decided requests -> privilege_update events)
+- [ ] broker/aresbrokerd.py  (STDLIB ONLY, no ares import, <200 lines, allowlist re-validate)
+- [ ] broker/broker.example.json
+- [ ] instance/main.py updated (register privileges plugin + PrivStore service)
+- [ ] tests/test_priv_store.py  (state machine, approve/deny)
+- [ ] tests/test_broker.py  (allowlist accept/reject, argv build never shell=True, no ares import)
+- [ ] tests/test_shell.py  (timeout cap, non-zero exit is ok=True, refuses own-uid in prod)
+- [ ] M10 acceptance test passed (spec §10)
+
+### M11 — Web dashboard  (read spec §17 first)
+- [ ] ares/plugins/dashboard/__init__.py
+- [ ] ares/plugins/dashboard/channel.py  (WebChannel + per-user outbox queues)
+- [ ] ares/plugins/dashboard/api.py  (FastAPI routes, token auth, thin wrappers)
+- [ ] ares/plugins/dashboard/server.py  (DashboardSource, uvicorn in-loop)
+- [ ] ares/plugins/dashboard/static/index.html  (single-file vanilla JS UI)
+- [ ] instance/main.py updated (register dashboard source + WebChannel)
+- [ ] tests/test_dashboard.py  (token auth required, memory path safety, approve flips DB)
+- [ ] M11 acceptance test passed (chat round-trip, approvals, RO memory)
+
+### M12 — Self-edit -> PR  (read spec §18 first)
+- [ ] ares/plugins/tools/selfedit_tools.py  (open_pr, get_pr_status; scratch repo ONLY)
+- [ ] instance/main.py updated (register selfedit tools)
+- [ ] tests/test_selfedit.py  (path escape in files rejected, never writes live code path)
+- [ ] M12 acceptance test passed (PR opened against test repo, cannot merge, status read)
+
+### M13 — Update listener + deploy artifacts  (read spec §14, §19 first)
+- [ ] updater/aresupdater.py  (STDLIB ONLY, no ares import; webhook HMAC + poll + safe swap)
+- [ ] deploy/provision.sh  (users, dirs, perms, sudoers, unit install; passes shellcheck + bash -n)
+- [ ] deploy/ares.service
+- [ ] deploy/ares-broker.service
+- [ ] deploy/ares-updater.service
+- [ ] ARES_ENV prod tripwires in config.py / secrets.py / shell_tools.py (fatal on readable .env, missing sandbox user)
+- [ ] tests/test_updater.py  (HMAC verify accept/reject, smoke-import-abort, no ares import)
+- [ ] tests/test_prod_tripwire.py  (prod mode fatal on misconfig)
+- [ ] M13 acceptance test passed (poll detects SHA, swap+restart, webhook verify, tripwire fires)
+
+## Decisions
+
+- 2026-07-11 (M0): pyproject includes the `dashboard` extra (fastapi, uvicorn) in
+  addition to voice/sip/calendar/dev. Spec §12 lists dashboard as an extra; the M0
+  ticklist parenthetical omitted it. §12 is authoritative.
+- 2026-07-11 (M0): venv built on python3.12 (3.12.3); spec/CLAUDE.md require ">=3.11".
+- 2026-07-11 (M0): setuptools `packages = ["ares"]` (explicit) rather than find-based
+  discovery; editable install resolves all `ares.*` subpackages via the package path,
+  and the project is only ever installed editable in dev.
+
+## Blockers
+
+- (none)

@@ -1,0 +1,11 @@
+.venv/
+.env
+instance/tasks/*.db
+instance/privq.db
+broker.json
+updater.json
+scratch/
+__pycache__
+*.pyc
+.pytest_cache
+*.egg-info/

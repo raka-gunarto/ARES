@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ares"
+version = "1.0.0"
+description = "Automated Request Execution System - self-hosted event-driven personal AI agent"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "PyYAML",
+    "python-dotenv",
+    "httpx",
+    "aiosqlite",
+]
+
+[project.optional-dependencies]
+voice = [
+    "faster-whisper",
+    "silero-vad",
+    "openwakeword",
+    "sounddevice",
+    "numpy",
+]
+sip = [
+    "pjsua2",
+]
+calendar = [
+    "caldav",
+]
+dashboard = [
+    "fastapi",
+    "uvicorn",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.setuptools]
+packages = ["ares"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
