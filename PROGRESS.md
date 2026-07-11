@@ -6,7 +6,7 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M0. Next action: create package `__init__.py` files (ares/core, ares/core/utils) and the utils trio (logging.py, ids.py, text.py).
+Milestone: M0. Next action: create `secrets.py` + `config.py` (full §8 Pydantic tree) and the instance content files (.env.example, config.yaml, memory tree).
 
 ## Ticklist
 
@@ -15,11 +15,11 @@ Milestone: M0. Next action: create package `__init__.py` files (ares/core, ares/
 - [x] .gitignore  (.venv/, .env, instance/tasks/*.db, instance/privq.db, broker.json, updater.json, scratch/, __pycache__, *.pyc, .pytest_cache)
 - [x] .venv created (`python3.11 -m venv .venv`) and `.venv/bin/pip install -e ".[dev]"` succeeds — CLAUDE.md venv rules apply from here on
 - [x] ares/__init__.py
-- [ ] ares/core/__init__.py
-- [ ] ares/core/utils/__init__.py
-- [ ] ares/core/utils/logging.py
-- [ ] ares/core/utils/ids.py
-- [ ] ares/core/utils/text.py
+- [x] ares/core/__init__.py
+- [x] ares/core/utils/__init__.py
+- [x] ares/core/utils/logging.py
+- [x] ares/core/utils/ids.py
+- [x] ares/core/utils/text.py
 - [ ] ares/core/secrets.py
 - [ ] ares/core/config.py  (full Pydantic model tree per spec §8)
 - [ ] instance/.env.example  (every !secret key from spec §8)
