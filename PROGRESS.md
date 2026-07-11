@@ -7,7 +7,8 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 ## Current
 
 Milestone: M1 (M0 complete, acceptance passed). Next action: create
-`ares/core/router.py` (ResponseRouter per spec §4.5), then critical.py, dispatcher.py.
+`ares/core/dispatcher.py` (per-user serial dispatch + LOW/HIGH policy per spec §4.3),
+then instance/main.py (wiring + supervisor + echo stub), then the two tests + acceptance.
 
 ## Ticklist
 
@@ -41,7 +42,7 @@ Milestone: M1 (M0 complete, acceptance passed). Next action: create
 - [x] ares/core/channel.py
 - [x] ares/core/session.py
 - [x] ares/core/router.py
-- [ ] ares/core/critical.py
+- [x] ares/core/critical.py
 - [ ] ares/core/dispatcher.py
 - [x] ares/plugins/__init__.py
 - [x] ares/plugins/sources/__init__.py
@@ -180,6 +181,9 @@ Milestone: M1 (M0 complete, acceptance passed). Next action: create
 - 2026-07-11 (M1): added `class ConfigError(Exception)` to `ares/core/config.py`.
   §7 says sources raise `ConfigError` from `core.config`, but §4.7 (M0) never listed
   it, so it was added when the source layer began (not a refactor — a required symbol).
+- 2026-07-11 (M1): §4.4 shows no `__init__` for `CriticalHandlerRegistry`, but its
+  `handle(event)` must hand a `ResponseRouter` to each handler. Reconciled by giving
+  the registry `__init__(self, router)` (main.py injects the router).
 
 ## Blockers
 
