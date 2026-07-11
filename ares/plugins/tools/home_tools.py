@@ -46,7 +46,7 @@ class GetHomeState(BaseTool):
         try:
             if entity_id:
                 # Get single entity state
-                state_obj = svc.get_state(entity_id)
+                state_obj = await svc.get_state(entity_id)
                 if state_obj is None:
                     return ToolResult(True, f"Entity {entity_id} not found.")
 
@@ -64,7 +64,7 @@ class GetHomeState(BaseTool):
 
             elif domain:
                 # Get all entities in domain, capped at 50 lines
-                states = svc.get_states(domain)
+                states = await svc.get_states(domain)
                 lines = []
                 for state_obj in states[:50]:
                     eid = state_obj.get("entity_id", "unknown")
@@ -79,7 +79,7 @@ class GetHomeState(BaseTool):
 
             else:
                 # No args: get snapshot summary
-                summary = svc.snapshot_summary()
+                summary = await svc.snapshot_summary()
                 return ToolResult(True, summary)
 
         except Exception as e:
@@ -150,7 +150,7 @@ class ControlDevice(BaseTool):
                     data["value"] = value
 
             # Call the service
-            result = svc.call_service(domain, action, entity_id, data)
+            result = await svc.call_service(domain, action, entity_id, data)
 
             return ToolResult(True, f"{action} sent to {entity_id}. Result: {result}")
 
@@ -189,7 +189,7 @@ class ListDevices(BaseTool):
 
         try:
             # Get states for domain or all
-            states = svc.get_states(domain) if domain else svc.get_states(None)
+            states = await svc.get_states(domain) if domain else await svc.get_states(None)
 
             lines = []
             for state_obj in states[:80]:
@@ -239,7 +239,7 @@ class CameraSnapshot(BaseTool):
         camera_entity = kwargs["camera_entity"]
 
         try:
-            path = svc.camera_snapshot(camera_entity)
+            path = await svc.camera_snapshot(camera_entity)
             size = path.stat().st_size
             return ToolResult(True, f"Snapshot saved: {path} ({size} bytes)")
 
