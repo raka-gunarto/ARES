@@ -116,12 +116,13 @@ M7, and record a Blocker if pjsua2/PJSIP genuinely can't be imported.
 - [x] M7 acceptance test passed (import-level + config validation, per spec §10; live-audio behavior needs hardware + voice extra)
 
 ### M8 — SIP
-- [ ] ares/plugins/sip/__init__.py
-- [ ] ares/plugins/sip/client.py
-- [ ] ares/plugins/sip/source.py
-- [ ] ares/plugins/channels/sip_message.py
-- [ ] ares/plugins/channels/sip_call.py
-- [ ] ares/plugins/tools/comms_tools.py
+- [x] ares/plugins/sip/__init__.py
+- [x] ares/plugins/sip/client.py
+- [x] ares/plugins/sip/source.py
+- [x] ares/plugins/channels/sip_message.py
+- [x] ares/plugins/channels/sip_call.py
+- [x] ares/plugins/tools/comms_tools.py
+- [ ] instance/main.py updated (wire SIP service/source/channels/tools when sip.enabled)
 - [ ] tests/test_sip_config.py  (import-level + config validation only)
 - [ ] M8 acceptance test passed (MESSAGE round-trip, inbound call conversation, place_call)
 
@@ -222,6 +223,17 @@ M7, and record a Blocker if pjsua2/PJSIP genuinely can't be imported.
   import and validate config without the extra installed (satisfying §10), while real
   audio operation requires `pip install -e ".[voice]"` on hardware. Not a Blocker —
   M7 is fully implementable/testable at the spec-mandated level.
+- 2026-07-11 (M8): the `sip` extra is `pjsua2` (a system PJSIP build), NOT installable
+  here. Same approach as M7: SIP modules use a guarded `pjsua2` import; `SIPService`
+  raises RuntimeError on instantiation if pjsua2 is absent; the channels/source/tools
+  drive an injected SIPService and import/validate config without pjsua2. The pjsua2-
+  using bodies of SIPService (register/send_message/call_and_speak/speak_into_call) are
+  structurally correct but cannot be exercised in this env (no PJSIP, no SIP server), so
+  the M8 acceptance is import-level + config validation per §10. Live SIP (MESSAGE
+  round-trip, inbound call) needs a real PJSIP build + Asterisk. Not a Blocker — M8 is
+  fully implementable/testable at the spec-mandated level. SIPService gained a
+  `user_uris: dict[str,str]` field + `has_active_call()`/`speak_into_call()` helpers
+  (spec §7.5 shows the core methods; these are the minimal glue the channels/tools need).
 
 ## Blockers
 
