@@ -66,9 +66,9 @@ FilesystemMemory / TaskStore. Documented under Decisions.
 - [x] ares/core/agent.py
 - [x] ares/plugins/tools/__init__.py
 - [x] ares/plugins/tools/core_tools.py  (all six core tools, spec §5)
-- [ ] instance/main.py updated (real Agent replaces echo stub)
+- [x] instance/main.py updated (real Agent replaces echo stub)
 - [x] tests/test_tool_registry.py  (search scoring, core/non-core, to_oai_schema)
-- [ ] tests/test_agent.py  (mocked LLM: tool loop, budget exhaustion, forced speak on user input)
+- [x] tests/test_agent.py  (mocked LLM: tool loop, budget exhaustion, forced speak on user input)
 - [ ] M2 acceptance test passed (live conversation over CLI via speak tool)
 
 ### M3 — Memory
@@ -196,6 +196,19 @@ FilesystemMemory / TaskStore. Documented under Decisions.
 - 2026-07-11 (M1): main.py uses `EnvSecretStore(instance/.env)` if present else falls
   back to `instance/.env.example` so the daemon runs in dev without a real .env. The
   M13 prod tripwire will forbid reading a readable .env in prod.
+- 2026-07-11 (M2): the Agent's frozen §4.10 signature requires a `TaskStore` (M4) and
+  `BaseMemory` (M3), which are later ticklist items. main.py wires minimal `_StubTasks`
+  (`list_open`→[], other methods raise) and `_StubMemory` (methods raise) so the
+  speak-path acceptance runs. M3 and M4 each include a main.py update to swap in the
+  real FilesystemMemory / TaskStore. Stubs live only in the wiring file; no new core
+  abstractions. tasks/memory tools are not registered in M2 (registry = core tools only).
+- 2026-07-11 (M2): agent.py reads the session via `sessions.get` (not a second `touch`),
+  because the Dispatcher already applied the §4.6 channel-mapping touch immediately
+  before calling `handle` — avoids duplicating the mapping table across two core modules.
+- 2026-07-11 (M2): M2 acceptance (§10 "live OAI endpoint") verified against a local
+  stdlib mock OAI server (the configured ollama.local is not reachable in this env),
+  exercising the real LLMClient→Agent→CLI→router path end-to-end; plus mocked-LLM unit
+  tests in test_agent.py. A real-endpoint run is available to the operator via config.
 
 ## Blockers
 

@@ -1,11 +1,17 @@
-"""ARES daemon entrypoint (M1): wires the event bus, CLI source, console
-channel, and a temporary echo-agent stub together and runs until shutdown.
+"""ARES daemon entrypoint (M2): wires the event bus, CLI source, console
+channel, and the real Agent (spec §4.10) together and runs until shutdown.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
-Per M1 scope, only the CLI source and console channel are constructed here.
+Per M2 scope, only the CLI source and console channel are constructed here.
 Other plugins (scheduler, home_assistant, voice, sip, dashboard, etc.) do not
 exist yet and are wired in later milestones — their config sections are
 ignored without error.
+
+The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory, but
+those stores are M3 (memory) / M4 (tasks) build-order items and don't exist
+yet. Until then, this file supplies small local stub implementations (see
+`_StubTasks` / `_StubMemory` below) that satisfy the ToolContext/Agent
+signatures without being exercised by the M2 acceptance path.
 """
 from __future__ import annotations
 
@@ -13,18 +19,22 @@ import asyncio
 import sys
 from pathlib import Path
 
+from ares.core.agent import Agent
 from ares.core.config import load_config
 from ares.core.critical import CriticalHandlerRegistry
 from ares.core.dispatcher import Dispatcher
 from ares.core.event import Event, EventBus, Priority
+from ares.core.llm.client import LLMClient
 from ares.core.router import ResponseRouter
 from ares.core.secrets import EnvSecretStore
 from ares.core.session import SessionManager
 from ares.core.source import BaseSource
+from ares.core.tool import ToolRegistry
 from ares.core.utils.ids import new_id
 from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.sources.cli import CLISource
+from ares.plugins.tools.core_tools import CORE_TOOLS
 
 log = get_logger(__name__)
 
@@ -32,34 +42,56 @@ MAX_SOURCE_RESTARTS = 10
 SOURCE_RESTART_DELAY_S = 5
 
 
-class EchoAgent:
-    """Temporary M1 stub standing in for the real Agent (arrives in M2).
+class _StubTasks:
+    """M2 STUB — replaced by the real TaskStore (M4).
 
-    Simply echoes the inbound text back to the user via the ResponseRouter.
-    Replace this class wholesale once ares/core/agent.py exists.
+    Only `list_open` is exercised by the M2 acceptance path (the Agent calls
+    it unconditionally on every event, and `get_active_tasks` calls it too).
+    Every other method a core tool might call raises, since a real task store
+    does not exist yet; the Agent wraps tool exceptions into a failed
+    ToolResult, so this can never crash the daemon.
     """
 
-    def __init__(self, sessions: SessionManager, router: ResponseRouter) -> None:
-        """
-        Args:
-            sessions: The session manager (the Dispatcher reads
-                `agent.sessions` to touch sessions on each event).
-            router: The response router used to deliver the echo reply.
-        """
-        self.sessions = sessions
-        self.router = router
+    async def list_open(self, user_id: str) -> list:
+        return []
 
-    async def handle(self, event: Event) -> None:
-        """Echo the event's text payload back to the user's active channel.
+    async def create(self, user_id: str, **kwargs):
+        raise RuntimeError("task store not available until M4")
 
-        Never raises: any failure is logged and swallowed so a single bad
-        event cannot take down the per-user worker loop.
-        """
-        try:
-            text = event.payload.get("text", "")
-            await self.router.speak(event.user_id, f"echo: {text}")
-        except Exception:
-            log.exception("EchoAgent.handle failed for event %s", event.id)
+    async def close(self, task_id: str, resolution: str):
+        raise RuntimeError("task store not available until M4")
+
+    async def update(self, task_id: str, **kwargs):
+        raise RuntimeError("task store not available until M4")
+
+    async def list_due(self, *args, **kwargs):
+        raise RuntimeError("task store not available until M4")
+
+    async def history(self, *args, **kwargs):
+        raise RuntimeError("task store not available until M4")
+
+
+class _StubMemory:
+    """M2 STUB — replaced by the real FilesystemMemory (M3).
+
+    No M2 tool uses memory (the registry holds only core tools in M2), so
+    these are never called; the stub just satisfies the ToolContext field.
+    """
+
+    async def grep(self, *args, **kwargs):
+        raise RuntimeError("memory not available until M3")
+
+    async def read(self, *args, **kwargs):
+        raise RuntimeError("memory not available until M3")
+
+    async def write(self, *args, **kwargs):
+        raise RuntimeError("memory not available until M3")
+
+    async def list(self, *args, **kwargs):
+        raise RuntimeError("memory not available until M3")
+
+    async def delete(self, *args, **kwargs):
+        raise RuntimeError("memory not available until M3")
 
 
 async def supervise(source: BaseSource, bus) -> None:
@@ -125,8 +157,27 @@ async def main(config_path: str) -> None:
     router = ResponseRouter(sessions)
     router.register(ConsoleChannel())
 
+    llm = LLMClient(
+        base_url=config.llm.base_url,
+        api_key=config.llm.api_key,
+        model=config.llm.model,
+    )
+    registry = ToolRegistry()
+    for t in CORE_TOOLS:
+        registry.register(t)
+
     critical = CriticalHandlerRegistry(router)
-    agent = EchoAgent(sessions, router)
+    agent = Agent(
+        llm=llm,
+        registry=registry,
+        sessions=sessions,
+        tasks=_StubTasks(),
+        memory=_StubMemory(),
+        router=router,
+        services={},
+        persona=config.persona,
+        max_tool_iterations=config.llm.max_tool_iterations,
+    )
     dispatcher = Dispatcher(bus, agent, critical)
 
     shutdown_event = asyncio.Event()
@@ -141,7 +192,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M1 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M2 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
@@ -156,6 +207,8 @@ async def main(config_path: str) -> None:
     await asyncio.gather(
         *supervisor_tasks, dispatcher_task, return_exceptions=True
     )
+
+    await llm.aclose()
 
 
 if __name__ == "__main__":
