@@ -6,14 +6,14 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M10 (M9 complete, acceptance passed — weather e2e vs live Open-Meteo, supervisor
-restart/backoff test, graceful shutdown hardened so SIGINT/SIGTERM exit ~0.1s). Open items
-carried forward: M6 live-HA-WS Blocker; live voice needs hardware+extra; live SIP needs
-PJSIP+Asterisk. Next action: begin M10 (Sandboxed shell + privilege queue + broker) —
-read spec §14 (security model), §15 (shell), §16 (privileges + broker) FIRST. SECURITY-
-CRITICAL milestone: broker/ is STDLIB-ONLY and must NEVER import ares; shell runs as
-ares-sbx never the daemon uid; ARES never approves its own privilege requests. Build shell
-first, then PrivStore/tools/source, then the broker (stdlib-only), with the security tests.
+Milestone: M11 (M10 complete, acceptance passed — all security invariants held: broker
+stdlib-only/no-ares-import, shell refuses own-uid in prod + secret isolation, ARES files
+but never approves privilege requests, broker runs only approved+allowlisted). Open items
+carried forward: M6 live-HA-WS Blocker; live voice/SIP need hardware/PJSIP. NOTE: main.py is
+now 390 lines (cap 400) — M11/M12 wiring may need care. Next action: begin M11 (Web
+dashboard) — read spec §17 FIRST. Dep: `dashboard` extra (fastapi, uvicorn — INSTALLED via
+.[dev]? no — need to check/install `.[dashboard]`). Token auth, polling (no websockets),
+memory RO with path safety, approve/deny flips DB (dashboard is where approve/deny live).
 
 ## Ticklist
 
@@ -147,7 +147,7 @@ first, then PrivStore/tools/source, then the broker (stdlib-only), with the secu
 - [x] tests/test_priv_store.py  (state machine, approve/deny)
 - [x] tests/test_broker.py  (allowlist accept/reject, argv build never shell=True, no ares import)
 - [x] tests/test_shell.py  (timeout cap, non-zero exit is ok=True, refuses own-uid in prod)
-- [ ] M10 acceptance test passed (spec §10)
+- [x] M10 acceptance test passed (spec §10) — dev mode: run_shell+warning, request_privilege→pending, broker executes allowlisted install→done, non-allowlisted rejected, privilege_update reaches agent
 
 ### M11 — Web dashboard  (read spec §17 first)
 - [ ] ares/plugins/dashboard/__init__.py
