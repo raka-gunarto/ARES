@@ -110,8 +110,9 @@ issue as M6 if the voice libs aren't installable here.
 - [x] ares/plugins/sources/voice/vad.py
 - [x] ares/plugins/sources/voice/stt.py
 - [x] ares/plugins/sources/voice/intent.py
-- [ ] ares/plugins/sources/voice/source.py
+- [x] ares/plugins/sources/voice/source.py
 - [x] ares/plugins/channels/voice_tts.py
+- [ ] instance/main.py updated (wire voice sources + VoiceTTSChannel when voice.enabled)
 - [ ] tests/test_voice_config.py  (import-level + config validation only, per spec §10)
 - [ ] M7 acceptance test passed (wake word → reply in room, ambient dropped, VAD muted during TTS)
 
