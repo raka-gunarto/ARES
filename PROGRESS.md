@@ -137,8 +137,8 @@ first, then PrivStore/tools/source, then the broker (stdlib-only), with the secu
 
 ### M10 — Sandboxed shell + privilege queue + broker  (read spec §14, §15, §16 first)
 - [ ] ares/plugins/tools/shell_tools.py  (run_shell; runs as ares-sbx in prod, never as ares)
-- [ ] ares/plugins/privileges/__init__.py
-- [ ] ares/plugins/privileges/store.py  (PrivStore; approve/deny NOT on tool surface)
+- [x] ares/plugins/privileges/__init__.py
+- [x] ares/plugins/privileges/store.py  (PrivStore; approve/deny NOT on tool surface)
 - [ ] ares/plugins/privileges/tools.py  (request_privilege, get_privilege_requests)
 - [ ] ares/plugins/privileges/source.py  (poll for decided requests -> privilege_update events)
 - [ ] broker/aresbrokerd.py  (STDLIB ONLY, no ares import, <200 lines, allowlist re-validate)
