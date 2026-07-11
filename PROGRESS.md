@@ -6,7 +6,8 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M0. Next action: create `secrets.py` + `config.py` (full §8 Pydantic tree) and the instance content files (.env.example, config.yaml, memory tree).
+Milestone: M1 (M0 complete, acceptance passed). Next action: begin M1 — create
+`ares/core/event.py` (Priority, Event, EventBus per spec §4.1).
 
 ## Ticklist
 
@@ -20,19 +21,19 @@ Milestone: M0. Next action: create `secrets.py` + `config.py` (full §8 Pydantic
 - [x] ares/core/utils/logging.py
 - [x] ares/core/utils/ids.py
 - [x] ares/core/utils/text.py
-- [ ] ares/core/secrets.py
-- [ ] ares/core/config.py  (full Pydantic model tree per spec §8)
-- [ ] instance/.env.example  (every !secret key from spec §8)
-- [ ] instance/config.yaml  (copy of spec §8 example)
-- [ ] instance/memory/INDEX.md  (verbatim from spec §9)
-- [ ] instance/memory/long-term/preferences.md
-- [ ] instance/memory/long-term/people.md
-- [ ] instance/memory/long-term/routines.md
-- [ ] instance/memory/long-term/home.md
-- [ ] instance/memory/short-term/.gitkeep
-- [ ] instance/tasks/.gitkeep
-- [ ] tests/test_config.py  (!secret resolution, SecretNotFound, unknown top-level key rejected)
-- [ ] M0 acceptance test passed (spec §10)
+- [x] ares/core/secrets.py
+- [x] ares/core/config.py  (full Pydantic model tree per spec §8)
+- [x] instance/.env.example  (every !secret key from spec §8)
+- [x] instance/config.yaml  (copy of spec §8 example)
+- [x] instance/memory/INDEX.md  (verbatim from spec §9)
+- [x] instance/memory/long-term/preferences.md
+- [x] instance/memory/long-term/people.md
+- [x] instance/memory/long-term/routines.md
+- [x] instance/memory/long-term/home.md
+- [x] instance/memory/short-term/.gitkeep
+- [x] instance/tasks/.gitkeep
+- [x] tests/test_config.py  (!secret resolution, SecretNotFound, unknown top-level key rejected)
+- [x] M0 acceptance test passed (spec §10)
 
 ### M1 — Bus + CLI loop (no LLM)
 - [ ] ares/core/event.py
@@ -172,6 +173,10 @@ Milestone: M0. Next action: create `secrets.py` + `config.py` (full §8 Pydantic
 - 2026-07-11 (M0): setuptools `packages = ["ares"]` (explicit) rather than find-based
   discovery; editable install resolves all `ares.*` subpackages via the package path,
   and the project is only ever installed editable in dev.
+- 2026-07-11 (M0): spec §8 line 899 has `living_room:{` (no space after the colon),
+  which is invalid YAML and makes the reference config unparseable. Fixed in our
+  `instance/config.yaml` copy to `living_room: { ... }` (matching the `kitchen:` line's
+  valid flow-mapping style) so M0 acceptance can load it. Spec file itself untouched.
 
 ## Blockers
 

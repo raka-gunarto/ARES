@@ -1,0 +1,106 @@
+persona: |
+  You are ARES, the household's resident AI. Dry, concise, competent.
+  You know the house, the routines, and the user. You never waffle.
+
+timezone: Europe/London
+
+llm:
+  base_url: http://ollama.local:11434/v1
+  api_key: !secret LLM_API_KEY          # "ollama" is fine for Ollama
+  model: qwen2.5:32b-instruct
+  temperature: 0.7
+  max_tool_iterations: 10
+
+session:
+  history_limit: 30
+  timeout_minutes: 45
+
+memory:
+  root: instance/memory
+  retention_days: 14
+
+tasks:
+  db_path: instance/tasks/tasks.db
+
+users:
+  primary:
+    sip_uri: sip:me@asterisk.local
+    ntfy_topic: ares-primary
+
+plugins:
+  cli:
+    enabled: true
+  console_channel:
+    enabled: true
+  scheduler:
+    enabled: true
+    housekeeping_time: "03:30"
+  push_ntfy:
+    enabled: false
+    server: https://ntfy.local
+    token: !secret NTFY_TOKEN
+  home_assistant:
+    enabled: false
+    ws_url: ws://ha.local:8123/api/websocket
+    rest_url: http://ha.local:8123
+    token: !secret HA_TOKEN
+    allowed_domains: [binary_sensor, person, alarm_control_panel]
+    allowed_entities: []
+    debounce_seconds: 5
+    priority_rules:
+      - match: "binary_sensor.smoke_*"
+        priority: CRITICAL
+      - match: "alarm_control_panel.*"
+        priority: CRITICAL
+      - match: "binary_sensor.front_door"
+        priority: HIGH
+    entity_rooms:
+      binary_sensor.kitchen_motion: kitchen
+  voice:
+    enabled: false
+    whisper_model: small
+    intent_strategy: hybrid            # wake_word | llm | hybrid
+    wake_word: "hey_ares"
+    default_room: living_room
+    rooms:
+      kitchen:    { input_device: "USB Audio 1", output_device: "USB Audio 1" }
+      living_room: { input_device: "USB Audio 2", output_device: "USB Audio 2" }
+    piper_model: en_GB-alan-medium
+  sip:
+    enabled: false
+    server: asterisk.local
+    username: ares
+    password: !secret SIP_PASSWORD
+    greeting: "ARES. Go ahead."
+  time_tools:
+    enabled: true
+    latitude: 51.32
+    longitude: -0.56
+    caldav_url: ""
+    caldav_username: ""
+    caldav_password: !secret CALDAV_PASSWORD
+  safety_critical:
+    enabled: false
+    fire_entities: ["binary_sensor.smoke_*"]
+    alarm_entities: ["alarm_control_panel.*"]
+  shell:
+    enabled: true
+    sandbox_user: ""                 # "" = run as daemon user (DEV ONLY, logs a warning)
+                                     # production: ares-sbx
+    workdir: /home/ares-sbx          # dev: any scratch dir
+    timeout_default_s: 30
+    timeout_max_s: 120
+  privileges:
+    enabled: true
+    db_path: instance/privq.db       # production: /var/lib/ares/privq.db
+  dashboard:
+    enabled: true
+    host: 0.0.0.0
+    port: 8788
+    password: !secret DASHBOARD_PASSWORD
+  selfedit:
+    enabled: false
+    live_code_path: /opt/ares/app    # read-only view of running code
+    scratch_repo: /home/ares-sbx/scratch/ares
+    github_repo: youruser/ares       # owner/name
+    github_token: !secret GITHUB_TOKEN   # fine-grained: PRs read/write only
