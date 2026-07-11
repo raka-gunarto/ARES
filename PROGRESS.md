@@ -131,7 +131,7 @@ mockable), source supervisor restart/backoff test, graceful-shutdown audit, READ
 - [ ] instance/main.py updated (register time tools when time_tools.enabled)
 - [ ] Source supervisor restart/backoff verified (kill socket test)
 - [ ] Graceful shutdown audit (Ctrl-C exits < 5 s, tasks cancelled, DB closed)
-- [ ] README.md  (install incl. Piper/PJSIP, config, running, adding a plugin)
+- [x] README.md  (install incl. Piper/PJSIP, config, running, adding a plugin)
 - [ ] M9 acceptance test passed (weather e2e, restart observed, clean shutdown)
 
 ### M10 — Sandboxed shell + privilege queue + broker  (read spec §14, §15, §16 first)
