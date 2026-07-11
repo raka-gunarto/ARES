@@ -70,10 +70,10 @@ FilesystemMemory. Read spec §4.12 first.
 - [x] M2 acceptance test passed (live conversation over CLI via speak tool)
 
 ### M3 — Memory
-- [ ] ares/core/memory/__init__.py
-- [ ] ares/core/memory/base.py
+- [x] ares/core/memory/__init__.py
+- [x] ares/core/memory/base.py
 - [ ] ares/core/memory/filesystem.py
-- [ ] ares/plugins/tools/memory_tools.py
+- [x] ares/plugins/tools/memory_tools.py
 - [ ] tests/test_memory.py  (path escape rejected, non-.md rejected, grep truncation, append vs overwrite, prune_short_term)
 - [ ] M3 acceptance test passed (remember → new session → recall via grep)
 
