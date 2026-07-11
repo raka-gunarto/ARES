@@ -84,6 +84,7 @@ scheduler source. Read spec §4.13 and §7.2 first.
 - [x] ares/plugins/tools/task_tools.py
 - [x] ares/plugins/sources/scheduler.py
 - [x] tests/test_task_store.py  (CRUD, list_due boundary, close sets resolution/closed_at, type CHECK)
+- [x] instance/main.py updated (real TaskStore replaces _StubTasks; scheduler source + task tools wired)
 - [ ] M4 acceptance test passed (2-minute reminder fires as HIGH task_due, spoken, closed)
 
 ### M5 — Sessions & routing across channels

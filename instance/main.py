@@ -1,19 +1,19 @@
-"""ARES daemon entrypoint (M3): wires the event bus, CLI source, console
-channel, memory storage, and the real Agent (spec §4.10) together and runs
-until shutdown.
+"""ARES daemon entrypoint (M4): wires the event bus, CLI and scheduler
+sources, console channel, memory storage, real TaskStore, and the real Agent
+(spec §4.10) together and runs until shutdown.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
-Per M3 scope, CLI source, console channel, and FilesystemMemory are wired.
-Memory tools (grep, read, write, list, delete) are registered as discoverable
-tools so search_tools can locate them (§4.10).
+Per M4 scope, CLI source, scheduler source, console channel, FilesystemMemory,
+and real TaskStore are wired. Memory tools and task tools (update_task,
+get_task_history) are registered as discoverable tools so search_tools can
+locate them (§4.10).
 
-Other plugins (scheduler, home_assistant, voice, sip, dashboard, etc.) do not
-exist yet and are wired in later milestones — their config sections are
-ignored without error.
+Other plugins (home_assistant, voice, sip, dashboard, etc.) do not exist yet
+and are wired in later milestones — their config sections are ignored without
+error.
 
 The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory.
-Memory is now the real FilesystemMemory (M3). Tasks remains a stub (_StubTasks)
-until the real TaskStore is built (M4).
+Both are now real (M4): TaskStore backed by SQLite, FilesystemMemory on disk.
 """
 from __future__ import annotations
 
@@ -32,47 +32,21 @@ from ares.core.router import ResponseRouter
 from ares.core.secrets import EnvSecretStore
 from ares.core.session import SessionManager
 from ares.core.source import BaseSource
+from ares.core.tasks.store import TaskStore
 from ares.core.tool import ToolRegistry
 from ares.core.utils.ids import new_id
 from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.sources.cli import CLISource
+from ares.plugins.sources.scheduler import SchedulerSource
 from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
+from ares.plugins.tools.task_tools import TASK_TOOLS
 
 log = get_logger(__name__)
 
 MAX_SOURCE_RESTARTS = 10
 SOURCE_RESTART_DELAY_S = 5
-
-
-class _StubTasks:
-    """M2 STUB — replaced by the real TaskStore (M4).
-
-    Only `list_open` is exercised by the M2 acceptance path (the Agent calls
-    it unconditionally on every event, and `get_active_tasks` calls it too).
-    Every other method a core tool might call raises, since a real task store
-    does not exist yet; the Agent wraps tool exceptions into a failed
-    ToolResult, so this can never crash the daemon.
-    """
-
-    async def list_open(self, user_id: str) -> list:
-        return []
-
-    async def create(self, user_id: str, **kwargs):
-        raise RuntimeError("task store not available until M4")
-
-    async def close(self, task_id: str, resolution: str):
-        raise RuntimeError("task store not available until M4")
-
-    async def update(self, task_id: str, **kwargs):
-        raise RuntimeError("task store not available until M4")
-
-    async def list_due(self, *args, **kwargs):
-        raise RuntimeError("task store not available until M4")
-
-    async def history(self, *args, **kwargs):
-        raise RuntimeError("task store not available until M4")
 
 
 async def supervise(source: BaseSource, bus) -> None:
@@ -144,10 +118,16 @@ async def main(config_path: str) -> None:
         model=config.llm.model,
     )
     memory = FilesystemMemory(Path(config.memory.root))
+
+    tasks = TaskStore(Path(config.tasks.db_path))
+    await tasks.init()
+
     registry = ToolRegistry()
     for t in CORE_TOOLS:
         registry.register(t)
     for t in MEMORY_TOOLS:
+        registry.register(t)
+    for t in TASK_TOOLS:
         registry.register(t)
 
     critical = CriticalHandlerRegistry(router)
@@ -155,7 +135,7 @@ async def main(config_path: str) -> None:
         llm=llm,
         registry=registry,
         sessions=sessions,
-        tasks=_StubTasks(),
+        tasks=tasks,
         memory=memory,
         router=router,
         services={},
@@ -173,10 +153,17 @@ async def main(config_path: str) -> None:
         cli.shutdown_event = shutdown_event
         sources.append(cli)
 
+    sched_config = config.plugins.get("scheduler", {})
+    if sched_config.get("enabled"):
+        scheduler = SchedulerSource(
+            bus, sched_config, tasks, memory, config.memory.retention_days
+        )
+        sources.append(scheduler)
+
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M3 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M4 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
@@ -193,6 +180,7 @@ async def main(config_path: str) -> None:
     )
 
     await llm.aclose()
+    await tasks.aclose()
 
 
 if __name__ == "__main__":
