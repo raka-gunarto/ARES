@@ -139,8 +139,8 @@ first, then PrivStore/tools/source, then the broker (stdlib-only), with the secu
 - [x] ares/plugins/tools/shell_tools.py  (run_shell; runs as ares-sbx in prod, never as ares)
 - [x] ares/plugins/privileges/__init__.py
 - [x] ares/plugins/privileges/store.py  (PrivStore; approve/deny NOT on tool surface)
-- [ ] ares/plugins/privileges/tools.py  (request_privilege, get_privilege_requests)
-- [ ] ares/plugins/privileges/source.py  (poll for decided requests -> privilege_update events)
+- [x] ares/plugins/privileges/tools.py  (request_privilege, get_privilege_requests)
+- [x] ares/plugins/privileges/source.py  (poll for decided requests -> privilege_update events)
 - [x] broker/aresbrokerd.py  (STDLIB ONLY, no ares import, <200 lines, allowlist re-validate)
 - [x] broker/broker.example.json
 - [ ] instance/main.py updated (register privileges plugin + PrivStore service)
