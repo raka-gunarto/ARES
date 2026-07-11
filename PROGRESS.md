@@ -59,10 +59,10 @@ FilesystemMemory / TaskStore. Documented under Decisions.
 - [x] M1 acceptance test passed (echo over CLI, !quit clean exit)
 
 ### M2 — Real agent
-- [ ] ares/core/llm/__init__.py
-- [ ] ares/core/llm/client.py
-- [ ] ares/core/tool.py
-- [ ] ares/core/prompt.py
+- [x] ares/core/llm/__init__.py
+- [x] ares/core/llm/client.py
+- [x] ares/core/tool.py
+- [x] ares/core/prompt.py
 - [ ] ares/core/agent.py
 - [ ] ares/plugins/tools/__init__.py
 - [ ] ares/plugins/tools/core_tools.py  (all six core tools, spec §5)
