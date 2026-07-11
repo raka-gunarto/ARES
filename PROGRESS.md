@@ -43,14 +43,14 @@ then instance/main.py (wiring + supervisor + echo stub), then the two tests + ac
 - [x] ares/core/session.py
 - [x] ares/core/router.py
 - [x] ares/core/critical.py
-- [ ] ares/core/dispatcher.py
+- [x] ares/core/dispatcher.py
 - [x] ares/plugins/__init__.py
 - [x] ares/plugins/sources/__init__.py
 - [x] ares/plugins/sources/cli.py
 - [x] ares/plugins/channels/__init__.py
 - [x] ares/plugins/channels/console.py
 - [ ] instance/main.py  (wiring + source supervisor + echo agent stub)
-- [ ] tests/test_session.py  (timeout clears history, history trim, touch channel mapping)
+- [x] tests/test_session.py  (timeout clears history, history trim, touch channel mapping)
 - [ ] tests/test_dispatcher.py  (per-user serialisation, LOW drop when busy, HIGH front-of-queue)
 - [ ] M1 acceptance test passed (echo over CLI, !quit clean exit)
 
@@ -184,6 +184,14 @@ then instance/main.py (wiring + supervisor + echo stub), then the two tests + ac
 - 2026-07-11 (M1): §4.4 shows no `__init__` for `CriticalHandlerRegistry`, but its
   `handle(event)` must hand a `ResponseRouter` to each handler. Reconciled by giving
   the registry `__init__(self, router)` (main.py injects the router).
+- 2026-07-11 (M1): §4.3 froze `Dispatcher.__init__(bus, agent, critical)` yet §4.6
+  requires the dispatcher to `touch` sessions before the agent. Reconciled: the
+  dispatcher reaches the SessionManager via `agent.sessions` (both the M1 echo stub
+  and the M2 real Agent expose `.sessions`). `Agent` is a TYPE_CHECKING-only import in
+  dispatcher.py (agent.py arrives in M2), so the module imports cleanly now.
+- 2026-07-11 (M1): main.py uses `EnvSecretStore(instance/.env)` if present else falls
+  back to `instance/.env.example` so the daemon runs in dev without a real .env. The
+  M13 prod tripwire will forbid reading a readable .env in prod.
 
 ## Blockers
 
