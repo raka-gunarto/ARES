@@ -6,13 +6,11 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M2 (M1 complete, acceptance passed). Next action: begin M2 — build the
-LLM client (`ares/core/llm/client.py`, §4.9) and `ares/core/tool.py` (§4.8), then
-prompt.py, agent.py (§4.10), core_tools.py (§5), wire real Agent into main.py.
-NOTE (M2 build-order): the Agent (§4.10) hard-depends on TaskStore (M4) and
-BaseMemory (M3). M2 will wire MINIMAL STUB tasks/memory objects inside main.py so the
-speak-path acceptance runs; M3 and M4 each get a main.py update to swap in the real
-FilesystemMemory / TaskStore. Documented under Decisions.
+Milestone: M3 (M2 complete, acceptance passed). Next action: begin M3 (Memory) —
+`ares/core/memory/__init__.py`, `memory/base.py` (BaseMemory, §4.12), then
+`memory/filesystem.py` (FilesystemMemory, grep-based), `plugins/tools/memory_tools.py`
+(§6.1), test_memory.py, and a main.py update to swap the M2 _StubMemory for the real
+FilesystemMemory. Read spec §4.12 first.
 
 ## Ticklist
 
@@ -69,7 +67,7 @@ FilesystemMemory / TaskStore. Documented under Decisions.
 - [x] instance/main.py updated (real Agent replaces echo stub)
 - [x] tests/test_tool_registry.py  (search scoring, core/non-core, to_oai_schema)
 - [x] tests/test_agent.py  (mocked LLM: tool loop, budget exhaustion, forced speak on user input)
-- [ ] M2 acceptance test passed (live conversation over CLI via speak tool)
+- [x] M2 acceptance test passed (live conversation over CLI via speak tool)
 
 ### M3 — Memory
 - [ ] ares/core/memory/__init__.py
