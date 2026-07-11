@@ -6,10 +6,13 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M5 (M4 complete, acceptance passed). Next action: begin M5 (Sessions &
-routing across channels) — `ares/plugins/channels/push_ntfy.py` (§7.6), test_router.py
-(delivery-time channel read, PUSH fallback on deliver False, notify path), main.py
-update to register the push channel, then the M5 acceptance. Read spec §7.6 and §4.5.
+Milestone: M6 (M5 complete, acceptance passed). Next action: begin M6 (Home
+Assistant) — read spec §14? no; read §7.3 (HA source + HAService), §6.3 (home_tools),
+§7.7 (safety.py), and the §8 home_assistant config first. Build
+`plugins/sources/home_assistant.py` (source + HAService + noise filter/debounce),
+`plugins/tools/home_tools.py`, `plugins/critical/{__init__,safety}.py`, main.py update
+(services dict + critical handlers), test_ha_filter.py. M6 needs a real/mocked HA;
+the acceptance can run against a MOCKED HA WebSocket/REST.
 
 ## Ticklist
 
@@ -89,8 +92,8 @@ update to register the push channel, then the M5 acceptance. Read spec §7.6 and
 ### M5 — Sessions & routing across channels
 - [x] ares/plugins/channels/push_ntfy.py
 - [x] tests/test_router.py  (delivery-time channel read, PUSH fallback on deliver False, notify path)
-- [ ] instance/main.py updated (register NtfyChannel when push_ntfy enabled)
-- [ ] M5 acceptance test passed (channel switch mid-conversation, fallback verified)
+- [x] instance/main.py updated (register NtfyChannel when push_ntfy enabled)
+- [x] M5 acceptance test passed (channel switch mid-conversation, fallback verified)
 
 ### M6 — Home Assistant
 - [ ] ares/plugins/sources/home_assistant.py  (source + HAService)

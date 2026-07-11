@@ -1,12 +1,15 @@
-"""ARES daemon entrypoint (M4): wires the event bus, CLI and scheduler
-sources, console channel, memory storage, real TaskStore, and the real Agent
-(spec §4.10) together and runs until shutdown.
+"""ARES daemon entrypoint (M5): wires the event bus, CLI and scheduler
+sources, console channel, push notification channel, memory storage, real
+TaskStore, and the real Agent (spec §4.10) together and runs until shutdown.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
-Per M4 scope, CLI source, scheduler source, console channel, FilesystemMemory,
-and real TaskStore are wired. Memory tools and task tools (update_task,
-get_task_history) are registered as discoverable tools so search_tools can
-locate them (§4.10).
+Per M5 scope, CLI source, scheduler source, console channel, push channel
+(when enabled), FilesystemMemory, and real TaskStore are wired. Memory tools
+and task tools (update_task, get_task_history) are registered as discoverable
+tools so search_tools can locate them (§4.10).
+
+The push notification channel (NtfyChannel) is registered when the push_ntfy
+plugin is enabled in config (§7.6).
 
 Other plugins (home_assistant, voice, sip, dashboard, etc.) do not exist yet
 and are wired in later milestones — their config sections are ignored without
@@ -37,6 +40,7 @@ from ares.core.tool import ToolRegistry
 from ares.core.utils.ids import new_id
 from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
+from ares.plugins.channels.push_ntfy import NtfyChannel
 from ares.plugins.sources.cli import CLISource
 from ares.plugins.sources.scheduler import SchedulerSource
 from ares.plugins.tools.core_tools import CORE_TOOLS
@@ -112,6 +116,17 @@ async def main(config_path: str) -> None:
     router = ResponseRouter(sessions)
     router.register(ConsoleChannel())
 
+    push_config = config.plugins.get("push_ntfy", {})
+    if push_config.get("enabled"):
+        topics = {uid: u.ntfy_topic for uid, u in config.users.items() if u.ntfy_topic}
+        router.register(
+            NtfyChannel(
+                server=push_config.get("server", ""),
+                token=push_config.get("token"),
+                topics=topics,
+            )
+        )
+
     llm = LLMClient(
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
@@ -163,7 +178,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M4 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M5 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
