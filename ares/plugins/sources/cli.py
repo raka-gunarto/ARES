@@ -31,22 +31,42 @@ class CLISource(BaseSource):
         Each non-empty line becomes an event.
         - Lines starting with "!high " emit with HIGH priority.
         - The command "!quit" stops the source.
+        - EOF also stops the source (and signals daemon shutdown), so piped
+          input that ends without an explicit "!quit" still shuts down cleanly.
         - Other lines emit with NORMAL priority.
+
+        Uses a cancellable `asyncio.StreamReader` connected to stdin (per
+        spec §0 rule 4: all I/O is async) instead of a blocking
+        `run_in_executor(sys.stdin.readline)` call, so this coroutine can be
+        cancelled promptly during shutdown.
         """
         loop = asyncio.get_event_loop()
 
+        try:
+            reader = asyncio.StreamReader()
+            protocol = asyncio.StreamReaderProtocol(reader)
+            await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+        except Exception as e:
+            log.warning(
+                "cli: could not attach async reader to stdin (%s); idling", e
+            )
+            while not self._stopping:
+                await asyncio.sleep(0.2)
+            return
+
         while not self._stopping:
             try:
-                # Read a line without blocking the event loop
-                line = await loop.run_in_executor(None, sys.stdin.readline)
+                line_bytes = await reader.readline()
 
-                # EOF is an empty string
-                if not line:
+                # EOF is an empty bytes string
+                if not line_bytes:
                     log.debug("cli: EOF reached")
-                    break
+                    self._stopping = True
+                    if self.shutdown_event is not None:
+                        self.shutdown_event.set()
+                    return
 
-                # Strip trailing newline
-                line = line.rstrip("\n\r")
+                line = line_bytes.decode(errors="replace").rstrip("\n\r")
 
                 # Skip empty or whitespace-only lines
                 if not line or not line.strip():
@@ -58,7 +78,7 @@ class CLISource(BaseSource):
                     self._stopping = True
                     if self.shutdown_event is not None:
                         self.shutdown_event.set()
-                    break
+                    return
 
                 # Check for !high priority prefix
                 if line.startswith("!high "):
@@ -76,7 +96,9 @@ class CLISource(BaseSource):
                         priority=Priority.NORMAL,
                     )
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                # Log the exception and continue, unless it's EOF
+                # Log the exception and continue on any other per-line error
                 log.error("cli: error reading input: %s", e)
                 continue

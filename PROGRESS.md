@@ -6,13 +6,14 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M9 (M8 complete). M7/M8 acceptances passed at the spec-§10 import+config level
-(voice: 24 tests; sip: 19 tests) with guarded imports (voice/sip extras not installed).
-Open items carried forward: M6 live-HA-WS Blocker; live voice needs hardware+extra; live
-SIP needs PJSIP+Asterisk. Next action: begin M9 (Time tools + hardening) — read §6.4
-(time_tools: weather via Open-Meteo public API [no key], calendar via CalDAV) and §4.2
-(source supervisor). M9 is FULLY runnable here: weather e2e (Open-Meteo is reachable or
-mockable), source supervisor restart/backoff test, graceful-shutdown audit, README.
+Milestone: M10 (M9 complete, acceptance passed — weather e2e vs live Open-Meteo, supervisor
+restart/backoff test, graceful shutdown hardened so SIGINT/SIGTERM exit ~0.1s). Open items
+carried forward: M6 live-HA-WS Blocker; live voice needs hardware+extra; live SIP needs
+PJSIP+Asterisk. Next action: begin M10 (Sandboxed shell + privilege queue + broker) —
+read spec §14 (security model), §15 (shell), §16 (privileges + broker) FIRST. SECURITY-
+CRITICAL milestone: broker/ is STDLIB-ONLY and must NEVER import ares; shell runs as
+ares-sbx never the daemon uid; ARES never approves its own privilege requests. Build shell
+first, then PrivStore/tools/source, then the broker (stdlib-only), with the security tests.
 
 ## Ticklist
 
@@ -130,9 +131,9 @@ mockable), source supervisor restart/backoff test, graceful-shutdown audit, READ
 - [x] ares/plugins/tools/time_tools.py
 - [x] instance/main.py updated (register time tools when time_tools.enabled)
 - [x] Source supervisor restart/backoff verified (tests/test_supervisor.py: clean-return, restart-then-success, max-10→source_failed, CancelledError propagates)
-- [ ] Graceful shutdown audit (Ctrl-C exits < 5 s, tasks cancelled, DB closed)
+- [x] Graceful shutdown audit (Ctrl-C exits < 5 s, tasks cancelled, DB closed) — hardened: cancellable async stdin reader + SIGINT/SIGTERM handlers; SIGINT now exits ~0.1s
 - [x] README.md  (install incl. Piper/PJSIP, config, running, adding a plugin)
-- [ ] M9 acceptance test passed (weather e2e, restart observed, clean shutdown)
+- [x] M9 acceptance test passed (weather e2e vs LIVE Open-Meteo, restart observed, clean shutdown)
 
 ### M10 — Sandboxed shell + privilege queue + broker  (read spec §14, §15, §16 first)
 - [ ] ares/plugins/tools/shell_tools.py  (run_shell; runs as ares-sbx in prod, never as ares)

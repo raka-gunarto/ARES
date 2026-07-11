@@ -48,6 +48,7 @@ Both are now real (M4): TaskStore backed by SQLite, FilesystemMemory on disk.
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
 from pathlib import Path
 
@@ -193,6 +194,16 @@ async def main(config_path: str) -> None:
 
     services: dict[str, object] = {}
     shutdown_event = asyncio.Event()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, shutdown_event.set)
+        except NotImplementedError:
+            # Signal handlers aren't supported on this platform (e.g. some
+            # Windows event loops); fall back to the KeyboardInterrupt path
+            # around asyncio.run() below.
+            log.warning("cannot install handler for %s on this platform", sig)
 
     sources: list[BaseSource] = []
     cli_config = config.plugins.get("cli", {})
