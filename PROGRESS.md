@@ -72,7 +72,7 @@ FilesystemMemory. Read spec §4.12 first.
 ### M3 — Memory
 - [x] ares/core/memory/__init__.py
 - [x] ares/core/memory/base.py
-- [ ] ares/core/memory/filesystem.py
+- [x] ares/core/memory/filesystem.py
 - [x] ares/plugins/tools/memory_tools.py
 - [ ] tests/test_memory.py  (path escape rejected, non-.md rejected, grep truncation, append vs overwrite, prune_short_term)
 - [ ] M3 acceptance test passed (remember → new session → recall via grep)
