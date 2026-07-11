@@ -40,14 +40,14 @@ Milestone: M1 (M0 complete, acceptance passed). Next action: create
 - [x] ares/core/source.py
 - [x] ares/core/channel.py
 - [x] ares/core/session.py
-- [ ] ares/core/router.py
+- [x] ares/core/router.py
 - [ ] ares/core/critical.py
 - [ ] ares/core/dispatcher.py
-- [ ] ares/plugins/__init__.py
-- [ ] ares/plugins/sources/__init__.py
-- [ ] ares/plugins/sources/cli.py
-- [ ] ares/plugins/channels/__init__.py
-- [ ] ares/plugins/channels/console.py
+- [x] ares/plugins/__init__.py
+- [x] ares/plugins/sources/__init__.py
+- [x] ares/plugins/sources/cli.py
+- [x] ares/plugins/channels/__init__.py
+- [x] ares/plugins/channels/console.py
 - [ ] instance/main.py  (wiring + source supervisor + echo agent stub)
 - [ ] tests/test_session.py  (timeout clears history, history trim, touch channel mapping)
 - [ ] tests/test_dispatcher.py  (per-user serialisation, LOW drop when busy, HIGH front-of-queue)
