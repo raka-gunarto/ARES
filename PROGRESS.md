@@ -100,8 +100,8 @@ the acceptance can run against a MOCKED HA WebSocket/REST.
 - [x] ares/plugins/tools/home_tools.py
 - [x] ares/plugins/critical/__init__.py
 - [x] ares/plugins/critical/safety.py
-- [ ] instance/main.py updated (service registration into services dict)
-- [ ] tests/test_ha_filter.py  (domain allow-list, same-state drop, debounce, priority rules mapping)
+- [x] instance/main.py updated (service registration into services dict)
+- [x] tests/test_ha_filter.py  (domain allow-list, same-state drop, debounce, priority rules mapping)
 - [ ] M6 acceptance test passed (filtered events, device control, CRITICAL bypass with no LLM call)
 
 ### M7 — Voice

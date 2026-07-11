@@ -1,4 +1,4 @@
-"""ARES daemon entrypoint (M5): wires the event bus, CLI and scheduler
+"""ARES daemon entrypoint (M6): wires the event bus, CLI and scheduler
 sources, console channel, push notification channel, memory storage, real
 TaskStore, and the real Agent (spec §4.10) together and runs until shutdown.
 
@@ -11,9 +11,16 @@ tools so search_tools can locate them (§4.10).
 The push notification channel (NtfyChannel) is registered when the push_ntfy
 plugin is enabled in config (§7.6).
 
-Other plugins (home_assistant, voice, sip, dashboard, etc.) do not exist yet
-and are wired in later milestones — their config sections are ignored without
-error.
+Per M6, when `home_assistant` is enabled in config, HAService is placed in
+`services["home_assistant"]`, HOME_TOOLS are registered, and a
+HomeAssistantSource is added to the supervised sources list (its `start()`
+idles — the live WS transport is a recorded Blocker). When `safety_critical`
+is enabled, FireHandler and IntruderHandler are registered on the critical
+handler registry so fire/intrusion events bypass the LLM entirely (§4.9).
+With both disabled (the shipped default), the daemon behaves exactly as M5.
+
+Other plugins (voice, sip, dashboard, etc.) do not exist yet and are wired in
+later milestones — their config sections are ignored without error.
 
 The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory.
 Both are now real (M4): TaskStore backed by SQLite, FilesystemMemory on disk.
@@ -41,9 +48,12 @@ from ares.core.utils.ids import new_id
 from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.channels.push_ntfy import NtfyChannel
+from ares.plugins.critical.safety import FireHandler, IntruderHandler
 from ares.plugins.sources.cli import CLISource
+from ares.plugins.sources.home_assistant import HAService, HomeAssistantSource
 from ares.plugins.sources.scheduler import SchedulerSource
 from ares.plugins.tools.core_tools import CORE_TOOLS
+from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
 from ares.plugins.tools.task_tools import TASK_TOOLS
 
@@ -145,20 +155,7 @@ async def main(config_path: str) -> None:
     for t in TASK_TOOLS:
         registry.register(t)
 
-    critical = CriticalHandlerRegistry(router)
-    agent = Agent(
-        llm=llm,
-        registry=registry,
-        sessions=sessions,
-        tasks=tasks,
-        memory=memory,
-        router=router,
-        services={},
-        persona=config.persona,
-        max_tool_iterations=config.llm.max_tool_iterations,
-    )
-    dispatcher = Dispatcher(bus, agent, critical)
-
+    services: dict[str, object] = {}
     shutdown_event = asyncio.Event()
 
     sources: list[BaseSource] = []
@@ -175,10 +172,49 @@ async def main(config_path: str) -> None:
         )
         sources.append(scheduler)
 
+    ha_service: HAService | None = None
+    ha_config = config.plugins.get("home_assistant", {})
+    if ha_config.get("enabled"):
+        ha_service = HAService(
+            rest_url=ha_config.get("rest_url", ""),
+            token=ha_config.get("token", ""),
+            allowed_domains=ha_config.get(
+                "allowed_domains", ["binary_sensor", "person", "alarm_control_panel"]
+            ),
+        )
+        services["home_assistant"] = ha_service
+        for t in HOME_TOOLS:
+            registry.register(t)
+        ha_source = HomeAssistantSource(bus, ha_config, ha_service, sessions)
+        sources.append(ha_source)
+
+    critical = CriticalHandlerRegistry(router)
+    safety_config = config.plugins.get("safety_critical", {})
+    if safety_config.get("enabled"):
+        critical.register(
+            FireHandler(safety_config.get("fire_entities", []), tasks, services)
+        )
+        critical.register(
+            IntruderHandler(safety_config.get("alarm_entities", []), tasks, services)
+        )
+
+    agent = Agent(
+        llm=llm,
+        registry=registry,
+        sessions=sessions,
+        tasks=tasks,
+        memory=memory,
+        router=router,
+        services=services,
+        persona=config.persona,
+        max_tool_iterations=config.llm.max_tool_iterations,
+    )
+    dispatcher = Dispatcher(bus, agent, critical)
+
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M5 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M6 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
@@ -196,6 +232,8 @@ async def main(config_path: str) -> None:
 
     await llm.aclose()
     await tasks.aclose()
+    if ha_service is not None:
+        await ha_service.aclose()
 
 
 if __name__ == "__main__":
