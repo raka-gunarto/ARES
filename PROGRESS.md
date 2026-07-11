@@ -6,11 +6,10 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M4 (M3 complete, acceptance passed). Next action: begin M4 (Tasks +
-scheduler) — `ares/core/tasks/__init__.py`, `tasks/store.py` (TaskStore, §4.13),
-`plugins/tools/task_tools.py` (§6.2), `plugins/sources/scheduler.py` (§7.2), test,
-and a main.py update to swap the M2 _StubTasks for the real TaskStore + wire the
-scheduler source. Read spec §4.13 and §7.2 first.
+Milestone: M5 (M4 complete, acceptance passed). Next action: begin M5 (Sessions &
+routing across channels) — `ares/plugins/channels/push_ntfy.py` (§7.6), test_router.py
+(delivery-time channel read, PUSH fallback on deliver False, notify path), main.py
+update to register the push channel, then the M5 acceptance. Read spec §7.6 and §4.5.
 
 ## Ticklist
 
@@ -85,7 +84,7 @@ scheduler source. Read spec §4.13 and §7.2 first.
 - [x] ares/plugins/sources/scheduler.py
 - [x] tests/test_task_store.py  (CRUD, list_due boundary, close sets resolution/closed_at, type CHECK)
 - [x] instance/main.py updated (real TaskStore replaces _StubTasks; scheduler source + task tools wired)
-- [ ] M4 acceptance test passed (2-minute reminder fires as HIGH task_due, spoken, closed)
+- [x] M4 acceptance test passed (2-minute reminder fires as HIGH task_due, spoken, closed)
 
 ### M5 — Sessions & routing across channels
 - [ ] ares/plugins/channels/push_ntfy.py
