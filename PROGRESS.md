@@ -6,9 +6,13 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M1 (M0 complete, acceptance passed). Next action: create
-`ares/core/dispatcher.py` (per-user serial dispatch + LOW/HIGH policy per spec §4.3),
-then instance/main.py (wiring + supervisor + echo stub), then the two tests + acceptance.
+Milestone: M2 (M1 complete, acceptance passed). Next action: begin M2 — build the
+LLM client (`ares/core/llm/client.py`, §4.9) and `ares/core/tool.py` (§4.8), then
+prompt.py, agent.py (§4.10), core_tools.py (§5), wire real Agent into main.py.
+NOTE (M2 build-order): the Agent (§4.10) hard-depends on TaskStore (M4) and
+BaseMemory (M3). M2 will wire MINIMAL STUB tasks/memory objects inside main.py so the
+speak-path acceptance runs; M3 and M4 each get a main.py update to swap in the real
+FilesystemMemory / TaskStore. Documented under Decisions.
 
 ## Ticklist
 
@@ -51,8 +55,8 @@ then instance/main.py (wiring + supervisor + echo stub), then the two tests + ac
 - [x] ares/plugins/channels/console.py
 - [x] instance/main.py  (wiring + source supervisor + echo agent stub)
 - [x] tests/test_session.py  (timeout clears history, history trim, touch channel mapping)
-- [ ] tests/test_dispatcher.py  (per-user serialisation, LOW drop when busy, HIGH front-of-queue)
-- [ ] M1 acceptance test passed (echo over CLI, !quit clean exit)
+- [x] tests/test_dispatcher.py  (per-user serialisation, LOW drop when busy, HIGH front-of-queue)
+- [x] M1 acceptance test passed (echo over CLI, !quit clean exit)
 
 ### M2 — Real agent
 - [ ] ares/core/llm/__init__.py
