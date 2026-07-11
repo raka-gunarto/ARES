@@ -127,7 +127,8 @@ mockable), source supervisor restart/backoff test, graceful-shutdown audit, READ
 - [x] M8 acceptance test passed (import-level + config validation, per spec §10; live SIP needs PJSIP + Asterisk)
 
 ### M9 — Time tools + hardening
-- [ ] ares/plugins/tools/time_tools.py
+- [x] ares/plugins/tools/time_tools.py
+- [ ] instance/main.py updated (register time tools when time_tools.enabled)
 - [ ] Source supervisor restart/backoff verified (kill socket test)
 - [ ] Graceful shutdown audit (Ctrl-C exits < 5 s, tasks cancelled, DB closed)
 - [ ] README.md  (install incl. Piper/PJSIP, config, running, adding a plugin)
