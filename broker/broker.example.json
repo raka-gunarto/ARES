@@ -1,0 +1,9 @@
+{
+  "db_path": "/var/lib/ares/privq.db",
+  "poll_seconds": 5,
+  "allow": {
+    "package_install": ["^[a-z0-9][a-z0-9+.\\-]*$"],
+    "service_action": ["^(restart|status) (ares|ares-updater)$"],
+    "command": []
+  }
+}
