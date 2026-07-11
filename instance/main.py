@@ -1,7 +1,7 @@
-"""ARES daemon entrypoint (M8): wires the event bus, CLI and scheduler
+"""ARES daemon entrypoint (M9): wires the event bus, CLI and scheduler
 sources, console channel, push notification channel, memory storage, real
-TaskStore, the real Agent (spec §4.10), voice pipeline (spec §7.4), and SIP
-service/source/channels (spec §7.5) together.
+TaskStore, the real Agent (spec §4.10), voice pipeline (spec §7.4), SIP
+service/source/channels (spec §7.5), and time tools (spec §8) together.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
 Per M5 scope, CLI source, scheduler source, console channel, push channel
@@ -33,6 +33,11 @@ supervised sources, and SIPMessageChannel/SIPCallChannel are registered on
 the router. SIP wiring is fully guarded by the enabled flag; with the default
 config (sip disabled), no SIP classes are instantiated and pjsua2 is never
 required.
+
+Per M9, when `time_tools` is enabled in config, time tools (get_weather,
+get_calendar, add_calendar_event) are registered on the tool registry. Time
+tools are enabled by default; this wiring is guarded by the enabled flag
+and only constructs tools without network access at startup.
 
 The dashboard and other plugins do not exist yet and are wired in later
 milestones — their config sections are ignored without error.
@@ -81,6 +86,7 @@ from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
 from ares.plugins.tools.task_tools import TASK_TOOLS
+from ares.plugins.tools.time_tools import build_time_tools
 
 log = get_logger(__name__)
 
@@ -179,6 +185,11 @@ async def main(config_path: str) -> None:
         registry.register(t)
     for t in TASK_TOOLS:
         registry.register(t)
+
+    time_config = config.plugins.get("time_tools", {})
+    if time_config.get("enabled"):
+        for t in build_time_tools(time_config):
+            registry.register(t)
 
     services: dict[str, object] = {}
     shutdown_event = asyncio.Event()
@@ -304,7 +315,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M8 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M9 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 

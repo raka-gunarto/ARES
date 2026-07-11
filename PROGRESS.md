@@ -128,8 +128,8 @@ mockable), source supervisor restart/backoff test, graceful-shutdown audit, READ
 
 ### M9 — Time tools + hardening
 - [x] ares/plugins/tools/time_tools.py
-- [ ] instance/main.py updated (register time tools when time_tools.enabled)
-- [ ] Source supervisor restart/backoff verified (kill socket test)
+- [x] instance/main.py updated (register time tools when time_tools.enabled)
+- [x] Source supervisor restart/backoff verified (tests/test_supervisor.py: clean-return, restart-then-success, max-10→source_failed, CancelledError propagates)
 - [ ] Graceful shutdown audit (Ctrl-C exits < 5 s, tasks cancelled, DB closed)
 - [x] README.md  (install incl. Piper/PJSIP, config, running, adding a plugin)
 - [ ] M9 acceptance test passed (weather e2e, restart observed, clean shutdown)
