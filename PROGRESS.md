@@ -63,7 +63,7 @@ FilesystemMemory / TaskStore. Documented under Decisions.
 - [x] ares/core/llm/client.py
 - [x] ares/core/tool.py
 - [x] ares/core/prompt.py
-- [ ] ares/core/agent.py
+- [x] ares/core/agent.py
 - [x] ares/plugins/tools/__init__.py
 - [x] ares/plugins/tools/core_tools.py  (all six core tools, spec §5)
 - [ ] instance/main.py updated (real Agent replaces echo stub)
