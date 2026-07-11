@@ -6,13 +6,14 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M6 (M5 complete, acceptance passed). Next action: begin M6 (Home
-Assistant) — read spec §14? no; read §7.3 (HA source + HAService), §6.3 (home_tools),
-§7.7 (safety.py), and the §8 home_assistant config first. Build
-`plugins/sources/home_assistant.py` (source + HAService + noise filter/debounce),
-`plugins/tools/home_tools.py`, `plugins/critical/{__init__,safety}.py`, main.py update
-(services dict + critical handlers), test_ha_filter.py. M6 needs a real/mocked HA;
-the acceptance can run against a MOCKED HA WebSocket/REST.
+Milestone: M7 (M6 complete, acceptance passed against mocked HA). NOTE: M6 has an
+OPEN Blocker — the live HA WebSocket transport (no WS dep in §12); all HA logic is
+built/tested and the acceptance passed with synthetic events, but a real-HA connection
+needs a user decision on adding a WS dependency. Next action: begin M7 (Voice) — read
+§7.4 first. M7 deps are the `voice` extra (faster-whisper, silero-vad, openwakeword,
+sounddevice, numpy). Per spec §10, the M7 acceptance/test is IMPORT-LEVEL + config
+validation ONLY (no real audio hardware in this env). Watch for the same class of
+issue as M6 if the voice libs aren't installable here.
 
 ## Ticklist
 
@@ -102,7 +103,7 @@ the acceptance can run against a MOCKED HA WebSocket/REST.
 - [x] ares/plugins/critical/safety.py
 - [x] instance/main.py updated (service registration into services dict)
 - [x] tests/test_ha_filter.py  (domain allow-list, same-state drop, debounce, priority rules mapping)
-- [ ] M6 acceptance test passed (filtered events, device control, CRITICAL bypass with no LLM call)
+- [x] M6 acceptance test passed (filtered events, device control, CRITICAL bypass with no LLM call) — against MOCKED HA; live WS transport still Blocked
 
 ### M7 — Voice
 - [ ] ares/plugins/sources/voice/__init__.py
