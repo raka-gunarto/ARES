@@ -106,12 +106,12 @@ issue as M6 if the voice libs aren't installable here.
 - [x] M6 acceptance test passed (filtered events, device control, CRITICAL bypass with no LLM call) — against MOCKED HA; live WS transport still Blocked
 
 ### M7 — Voice
-- [ ] ares/plugins/sources/voice/__init__.py
-- [ ] ares/plugins/sources/voice/vad.py
-- [ ] ares/plugins/sources/voice/stt.py
-- [ ] ares/plugins/sources/voice/intent.py
+- [x] ares/plugins/sources/voice/__init__.py
+- [x] ares/plugins/sources/voice/vad.py
+- [x] ares/plugins/sources/voice/stt.py
+- [x] ares/plugins/sources/voice/intent.py
 - [ ] ares/plugins/sources/voice/source.py
-- [ ] ares/plugins/channels/voice_tts.py
+- [x] ares/plugins/channels/voice_tts.py
 - [ ] tests/test_voice_config.py  (import-level + config validation only, per spec §10)
 - [ ] M7 acceptance test passed (wake word → reply in room, ambient dropped, VAD muted during TTS)
 
@@ -213,6 +213,15 @@ issue as M6 if the voice libs aren't installable here.
   stdlib mock OAI server (the configured ollama.local is not reachable in this env),
   exercising the real LLMClient→Agent→CLI→router path end-to-end; plus mocked-LLM unit
   tests in test_agent.py. A real-endpoint run is available to the operator via config.
+- 2026-07-11 (M7): the `voice` extra (faster-whisper, silero-vad, openwakeword,
+  sounddevice, numpy) is NOT installed in this env (torch/ctranslate2 resolution is
+  heavy and there is no audio hardware). Per spec §10 the M7 test is import-level +
+  config validation ONLY. So the voice modules use GUARDED/LAZY imports of the heavy
+  libs (top-level `try/except ImportError` → `_HAVE_*` flag; the wrapper classes raise
+  a clear RuntimeError at INSTANTIATION if the lib is missing). This lets the modules
+  import and validate config without the extra installed (satisfying §10), while real
+  audio operation requires `pip install -e ".[voice]"` on hardware. Not a Blocker —
+  M7 is fully implementable/testable at the spec-mandated level.
 
 ## Blockers
 
