@@ -87,8 +87,9 @@ update to register the push channel, then the M5 acceptance. Read spec §7.6 and
 - [x] M4 acceptance test passed (2-minute reminder fires as HIGH task_due, spoken, closed)
 
 ### M5 — Sessions & routing across channels
-- [ ] ares/plugins/channels/push_ntfy.py
-- [ ] tests/test_router.py  (delivery-time channel read, PUSH fallback on deliver False, notify path)
+- [x] ares/plugins/channels/push_ntfy.py
+- [x] tests/test_router.py  (delivery-time channel read, PUSH fallback on deliver False, notify path)
+- [ ] instance/main.py updated (register NtfyChannel when push_ntfy enabled)
 - [ ] M5 acceptance test passed (channel switch mid-conversation, fallback verified)
 
 ### M6 — Home Assistant
