@@ -136,7 +136,7 @@ first, then PrivStore/tools/source, then the broker (stdlib-only), with the secu
 - [x] M9 acceptance test passed (weather e2e vs LIVE Open-Meteo, restart observed, clean shutdown)
 
 ### M10 — Sandboxed shell + privilege queue + broker  (read spec §14, §15, §16 first)
-- [ ] ares/plugins/tools/shell_tools.py  (run_shell; runs as ares-sbx in prod, never as ares)
+- [x] ares/plugins/tools/shell_tools.py  (run_shell; runs as ares-sbx in prod, never as ares)
 - [x] ares/plugins/privileges/__init__.py
 - [x] ares/plugins/privileges/store.py  (PrivStore; approve/deny NOT on tool surface)
 - [ ] ares/plugins/privileges/tools.py  (request_privilege, get_privilege_requests)
