@@ -6,14 +6,13 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M7 (M6 complete, acceptance passed against mocked HA). NOTE: M6 has an
-OPEN Blocker — the live HA WebSocket transport (no WS dep in §12); all HA logic is
-built/tested and the acceptance passed with synthetic events, but a real-HA connection
-needs a user decision on adding a WS dependency. Next action: begin M7 (Voice) — read
-§7.4 first. M7 deps are the `voice` extra (faster-whisper, silero-vad, openwakeword,
-sounddevice, numpy). Per spec §10, the M7 acceptance/test is IMPORT-LEVEL + config
-validation ONLY (no real audio hardware in this env). Watch for the same class of
-issue as M6 if the voice libs aren't installable here.
+Milestone: M8 (M7 complete). M7 acceptance passed at the spec-§10 level (import + config
+validation; 24 voice tests). Voice modules use guarded imports (voice extra not installed
+here); live-audio behavior needs hardware + `pip install -e ".[voice]"`. M6's live-HA-WS
+Blocker remains open. Next action: begin M8 (SIP) — read §7.5 first. M8 dep is the `sip`
+extra (`pjsua2`, a system PJSIP build) — likely NOT installable here; per spec §10 the M8
+test is import-level + config validation ONLY. Expect the same guarded-import approach as
+M7, and record a Blocker if pjsua2/PJSIP genuinely can't be imported.
 
 ## Ticklist
 
@@ -112,9 +111,9 @@ issue as M6 if the voice libs aren't installable here.
 - [x] ares/plugins/sources/voice/intent.py
 - [x] ares/plugins/sources/voice/source.py
 - [x] ares/plugins/channels/voice_tts.py
-- [ ] instance/main.py updated (wire voice sources + VoiceTTSChannel when voice.enabled)
-- [ ] tests/test_voice_config.py  (import-level + config validation only, per spec §10)
-- [ ] M7 acceptance test passed (wake word → reply in room, ambient dropped, VAD muted during TTS)
+- [x] instance/main.py updated (wire voice sources + VoiceTTSChannel when voice.enabled)
+- [x] tests/test_voice_config.py  (import-level + config validation only, per spec §10)
+- [x] M7 acceptance test passed (import-level + config validation, per spec §10; live-audio behavior needs hardware + voice extra)
 
 ### M8 — SIP
 - [ ] ares/plugins/sip/__init__.py

@@ -1,6 +1,6 @@
-"""ARES daemon entrypoint (M6): wires the event bus, CLI and scheduler
+"""ARES daemon entrypoint (M7): wires the event bus, CLI and scheduler
 sources, console channel, push notification channel, memory storage, real
-TaskStore, and the real Agent (spec §4.10) together and runs until shutdown.
+TaskStore, the real Agent (spec §4.10), and voice pipeline (spec §7.4) together.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
 Per M5 scope, CLI source, scheduler source, console channel, push channel
@@ -19,7 +19,13 @@ is enabled, FireHandler and IntruderHandler are registered on the critical
 handler registry so fire/intrusion events bypass the LLM entirely (§4.9).
 With both disabled (the shipped default), the daemon behaves exactly as M5.
 
-Other plugins (voice, sip, dashboard, etc.) do not exist yet and are wired in
+Per M7, when `voice` is enabled in config, one VoiceSource per configured
+room is added to supervised sources, and a VoiceTTSChannel is registered on
+the router. Voice wiring is fully guarded by the enabled flag; with the default
+config (voice disabled), no voice classes are instantiated and no voice extra
+dependencies are required.
+
+Other plugins (sip, dashboard, etc.) do not exist yet and are wired in
 later milestones — their config sections are ignored without error.
 
 The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory.
@@ -48,10 +54,15 @@ from ares.core.utils.ids import new_id
 from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.channels.push_ntfy import NtfyChannel
+from ares.plugins.channels.voice_tts import VoiceTTSChannel
 from ares.plugins.critical.safety import FireHandler, IntruderHandler
 from ares.plugins.sources.cli import CLISource
 from ares.plugins.sources.home_assistant import HAService, HomeAssistantSource
 from ares.plugins.sources.scheduler import SchedulerSource
+from ares.plugins.sources.voice.intent import IntentFilter
+from ares.plugins.sources.voice.stt import WhisperSTT
+from ares.plugins.sources.voice.source import VoiceSource
+from ares.plugins.sources.voice.vad import SileroVAD
 from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
@@ -188,6 +199,45 @@ async def main(config_path: str) -> None:
         ha_source = HomeAssistantSource(bus, ha_config, ha_service, sessions)
         sources.append(ha_source)
 
+    voice_config = config.plugins.get("voice", {})
+    if voice_config.get("enabled"):
+        # Build shared voice pipeline components (raises RuntimeError if voice extra absent)
+        vad = SileroVAD()
+        stt = WhisperSTT(model_size=voice_config.get("whisper_model", "small"))
+        intent = IntentFilter(
+            voice_config.get("intent_strategy", "hybrid"),
+            voice_config.get("wake_word", "hey_ares"),
+            llm=llm,
+        )
+
+        # Wire one VoiceSource per configured room
+        rooms = voice_config.get("rooms", {})
+        mute_events: dict[str, asyncio.Event] = {}
+        for room, room_cfg in rooms.items():
+            ev = asyncio.Event()
+            mute_events[room] = ev
+            voice_source = VoiceSource(
+                bus,
+                voice_config,
+                room,
+                room_cfg.get("input_device"),
+                vad,
+                stt,
+                intent,
+                ev,
+            )
+            sources.append(voice_source)
+
+        # Register the TTS channel for voice delivery
+        router.register(
+            VoiceTTSChannel(
+                rooms,
+                voice_config.get("default_room", ""),
+                voice_config.get("piper_model", ""),
+                mute_events,
+            )
+        )
+
     critical = CriticalHandlerRegistry(router)
     safety_config = config.plugins.get("safety_critical", {})
     if safety_config.get("enabled"):
@@ -214,7 +264,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M6 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M7 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
