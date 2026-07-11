@@ -79,8 +79,8 @@ scheduler source. Read spec §4.13 and §7.2 first.
 - [x] M3 acceptance test passed (remember → new session → recall via grep)
 
 ### M4 — Tasks + scheduler
-- [ ] ares/core/tasks/__init__.py
-- [ ] ares/core/tasks/store.py
+- [x] ares/core/tasks/__init__.py
+- [x] ares/core/tasks/store.py
 - [ ] ares/plugins/tools/task_tools.py
 - [ ] ares/plugins/sources/scheduler.py
 - [ ] tests/test_task_store.py  (CRUD, list_due boundary, close sets resolution/closed_at, type CHECK)
