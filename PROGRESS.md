@@ -64,10 +64,10 @@ FilesystemMemory / TaskStore. Documented under Decisions.
 - [x] ares/core/tool.py
 - [x] ares/core/prompt.py
 - [ ] ares/core/agent.py
-- [ ] ares/plugins/tools/__init__.py
-- [ ] ares/plugins/tools/core_tools.py  (all six core tools, spec §5)
+- [x] ares/plugins/tools/__init__.py
+- [x] ares/plugins/tools/core_tools.py  (all six core tools, spec §5)
 - [ ] instance/main.py updated (real Agent replaces echo stub)
-- [ ] tests/test_tool_registry.py  (search scoring, core/non-core, to_oai_schema)
+- [x] tests/test_tool_registry.py  (search scoring, core/non-core, to_oai_schema)
 - [ ] tests/test_agent.py  (mocked LLM: tool loop, budget exhaustion, forced speak on user input)
 - [ ] M2 acceptance test passed (live conversation over CLI via speak tool)
 
