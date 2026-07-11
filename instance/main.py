@@ -1,17 +1,19 @@
-"""ARES daemon entrypoint (M2): wires the event bus, CLI source, console
-channel, and the real Agent (spec §4.10) together and runs until shutdown.
+"""ARES daemon entrypoint (M3): wires the event bus, CLI source, console
+channel, memory storage, and the real Agent (spec §4.10) together and runs
+until shutdown.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
-Per M2 scope, only the CLI source and console channel are constructed here.
+Per M3 scope, CLI source, console channel, and FilesystemMemory are wired.
+Memory tools (grep, read, write, list, delete) are registered as discoverable
+tools so search_tools can locate them (§4.10).
+
 Other plugins (scheduler, home_assistant, voice, sip, dashboard, etc.) do not
 exist yet and are wired in later milestones — their config sections are
 ignored without error.
 
-The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory, but
-those stores are M3 (memory) / M4 (tasks) build-order items and don't exist
-yet. Until then, this file supplies small local stub implementations (see
-`_StubTasks` / `_StubMemory` below) that satisfy the ToolContext/Agent
-signatures without being exercised by the M2 acceptance path.
+The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory.
+Memory is now the real FilesystemMemory (M3). Tasks remains a stub (_StubTasks)
+until the real TaskStore is built (M4).
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from ares.core.critical import CriticalHandlerRegistry
 from ares.core.dispatcher import Dispatcher
 from ares.core.event import Event, EventBus, Priority
 from ares.core.llm.client import LLMClient
+from ares.core.memory.filesystem import FilesystemMemory
 from ares.core.router import ResponseRouter
 from ares.core.secrets import EnvSecretStore
 from ares.core.session import SessionManager
@@ -35,6 +38,7 @@ from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.sources.cli import CLISource
 from ares.plugins.tools.core_tools import CORE_TOOLS
+from ares.plugins.tools.memory_tools import MEMORY_TOOLS
 
 log = get_logger(__name__)
 
@@ -69,29 +73,6 @@ class _StubTasks:
 
     async def history(self, *args, **kwargs):
         raise RuntimeError("task store not available until M4")
-
-
-class _StubMemory:
-    """M2 STUB — replaced by the real FilesystemMemory (M3).
-
-    No M2 tool uses memory (the registry holds only core tools in M2), so
-    these are never called; the stub just satisfies the ToolContext field.
-    """
-
-    async def grep(self, *args, **kwargs):
-        raise RuntimeError("memory not available until M3")
-
-    async def read(self, *args, **kwargs):
-        raise RuntimeError("memory not available until M3")
-
-    async def write(self, *args, **kwargs):
-        raise RuntimeError("memory not available until M3")
-
-    async def list(self, *args, **kwargs):
-        raise RuntimeError("memory not available until M3")
-
-    async def delete(self, *args, **kwargs):
-        raise RuntimeError("memory not available until M3")
 
 
 async def supervise(source: BaseSource, bus) -> None:
@@ -162,8 +143,11 @@ async def main(config_path: str) -> None:
         api_key=config.llm.api_key,
         model=config.llm.model,
     )
+    memory = FilesystemMemory(Path(config.memory.root))
     registry = ToolRegistry()
     for t in CORE_TOOLS:
+        registry.register(t)
+    for t in MEMORY_TOOLS:
         registry.register(t)
 
     critical = CriticalHandlerRegistry(router)
@@ -172,7 +156,7 @@ async def main(config_path: str) -> None:
         registry=registry,
         sessions=sessions,
         tasks=_StubTasks(),
-        memory=_StubMemory(),
+        memory=memory,
         router=router,
         services={},
         persona=config.persona,
@@ -192,7 +176,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M2 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M3 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 

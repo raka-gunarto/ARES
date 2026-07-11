@@ -74,7 +74,8 @@ FilesystemMemory. Read spec §4.12 first.
 - [x] ares/core/memory/base.py
 - [x] ares/core/memory/filesystem.py
 - [x] ares/plugins/tools/memory_tools.py
-- [ ] tests/test_memory.py  (path escape rejected, non-.md rejected, grep truncation, append vs overwrite, prune_short_term)
+- [x] tests/test_memory.py  (path escape rejected, non-.md rejected, grep truncation, append vs overwrite, prune_short_term)
+- [x] instance/main.py updated (real FilesystemMemory replaces _StubMemory; MEMORY_TOOLS registered)
 - [ ] M3 acceptance test passed (remember → new session → recall via grep)
 
 ### M4 — Tasks + scheduler
