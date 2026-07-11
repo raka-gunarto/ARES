@@ -49,7 +49,7 @@ then instance/main.py (wiring + supervisor + echo stub), then the two tests + ac
 - [x] ares/plugins/sources/cli.py
 - [x] ares/plugins/channels/__init__.py
 - [x] ares/plugins/channels/console.py
-- [ ] instance/main.py  (wiring + source supervisor + echo agent stub)
+- [x] instance/main.py  (wiring + source supervisor + echo agent stub)
 - [x] tests/test_session.py  (timeout clears history, history trim, touch channel mapping)
 - [ ] tests/test_dispatcher.py  (per-user serialisation, LOW drop when busy, HIGH front-of-queue)
 - [ ] M1 acceptance test passed (echo over CLI, !quit clean exit)
