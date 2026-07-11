@@ -6,13 +6,13 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M8 (M7 complete). M7 acceptance passed at the spec-§10 level (import + config
-validation; 24 voice tests). Voice modules use guarded imports (voice extra not installed
-here); live-audio behavior needs hardware + `pip install -e ".[voice]"`. M6's live-HA-WS
-Blocker remains open. Next action: begin M8 (SIP) — read §7.5 first. M8 dep is the `sip`
-extra (`pjsua2`, a system PJSIP build) — likely NOT installable here; per spec §10 the M8
-test is import-level + config validation ONLY. Expect the same guarded-import approach as
-M7, and record a Blocker if pjsua2/PJSIP genuinely can't be imported.
+Milestone: M9 (M8 complete). M7/M8 acceptances passed at the spec-§10 import+config level
+(voice: 24 tests; sip: 19 tests) with guarded imports (voice/sip extras not installed).
+Open items carried forward: M6 live-HA-WS Blocker; live voice needs hardware+extra; live
+SIP needs PJSIP+Asterisk. Next action: begin M9 (Time tools + hardening) — read §6.4
+(time_tools: weather via Open-Meteo public API [no key], calendar via CalDAV) and §4.2
+(source supervisor). M9 is FULLY runnable here: weather e2e (Open-Meteo is reachable or
+mockable), source supervisor restart/backoff test, graceful-shutdown audit, README.
 
 ## Ticklist
 
@@ -122,9 +122,9 @@ M7, and record a Blocker if pjsua2/PJSIP genuinely can't be imported.
 - [x] ares/plugins/channels/sip_message.py
 - [x] ares/plugins/channels/sip_call.py
 - [x] ares/plugins/tools/comms_tools.py
-- [ ] instance/main.py updated (wire SIP service/source/channels/tools when sip.enabled)
-- [ ] tests/test_sip_config.py  (import-level + config validation only)
-- [ ] M8 acceptance test passed (MESSAGE round-trip, inbound call conversation, place_call)
+- [x] instance/main.py updated (wire SIP service/source/channels/tools when sip.enabled)
+- [x] tests/test_sip_config.py  (import-level + config validation only)
+- [x] M8 acceptance test passed (import-level + config validation, per spec §10; live SIP needs PJSIP + Asterisk)
 
 ### M9 — Time tools + hardening
 - [ ] ares/plugins/tools/time_tools.py

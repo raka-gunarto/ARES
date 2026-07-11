@@ -1,6 +1,7 @@
-"""ARES daemon entrypoint (M7): wires the event bus, CLI and scheduler
+"""ARES daemon entrypoint (M8): wires the event bus, CLI and scheduler
 sources, console channel, push notification channel, memory storage, real
-TaskStore, the real Agent (spec §4.10), and voice pipeline (spec §7.4) together.
+TaskStore, the real Agent (spec §4.10), voice pipeline (spec §7.4), and SIP
+service/source/channels (spec §7.5) together.
 
 This is the ONLY file in the repo that performs instance wiring (spec §8).
 Per M5 scope, CLI source, scheduler source, console channel, push channel
@@ -25,8 +26,16 @@ the router. Voice wiring is fully guarded by the enabled flag; with the default
 config (voice disabled), no voice classes are instantiated and no voice extra
 dependencies are required.
 
-Other plugins (sip, dashboard, etc.) do not exist yet and are wired in
-later milestones — their config sections are ignored without error.
+Per M8, when `sip` is enabled in config, SIPService is created (raises
+RuntimeError if pjsua2 is missing — correct fail-fast), placed in
+`services["sip"]`, COMMS_TOOLS are registered, SIPSource is added to
+supervised sources, and SIPMessageChannel/SIPCallChannel are registered on
+the router. SIP wiring is fully guarded by the enabled flag; with the default
+config (sip disabled), no SIP classes are instantiated and pjsua2 is never
+required.
+
+The dashboard and other plugins do not exist yet and are wired in later
+milestones — their config sections are ignored without error.
 
 The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory.
 Both are now real (M4): TaskStore backed by SQLite, FilesystemMemory on disk.
@@ -54,8 +63,12 @@ from ares.core.utils.ids import new_id
 from ares.core.utils.logging import get_logger, setup_logging
 from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.channels.push_ntfy import NtfyChannel
+from ares.plugins.channels.sip_call import SIPCallChannel
+from ares.plugins.channels.sip_message import SIPMessageChannel
 from ares.plugins.channels.voice_tts import VoiceTTSChannel
 from ares.plugins.critical.safety import FireHandler, IntruderHandler
+from ares.plugins.sip.client import SIPService
+from ares.plugins.sip.source import SIPSource
 from ares.plugins.sources.cli import CLISource
 from ares.plugins.sources.home_assistant import HAService, HomeAssistantSource
 from ares.plugins.sources.scheduler import SchedulerSource
@@ -63,6 +76,7 @@ from ares.plugins.sources.voice.intent import IntentFilter
 from ares.plugins.sources.voice.stt import WhisperSTT
 from ares.plugins.sources.voice.source import VoiceSource
 from ares.plugins.sources.voice.vad import SileroVAD
+from ares.plugins.tools.comms_tools import COMMS_TOOLS
 from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
@@ -238,6 +252,32 @@ async def main(config_path: str) -> None:
             )
         )
 
+    sip_service: object | None = None
+    sip_config = config.plugins.get("sip", {})
+    if sip_config.get("enabled"):
+        # Build user_uris mapping from configured users
+        user_uris = {uid: u.sip_uri for uid, u in config.users.items() if u.sip_uri}
+
+        # Create SIP service (raises RuntimeError if pjsua2 not installed)
+        sip_service = SIPService(
+            server=sip_config.get("server", ""),
+            username=sip_config.get("username", ""),
+            password=sip_config.get("password", ""),
+            user_uris=user_uris,
+            greeting=sip_config.get("greeting", ""),
+        )
+        services["sip"] = sip_service
+
+        # Register SIP communication tools
+        for t in COMMS_TOOLS:
+            registry.register(t)
+
+        # Wire SIP source and channels
+        sip_source = SIPSource(bus, sip_config, sip_service)
+        sources.append(sip_source)
+        router.register(SIPMessageChannel(sip_service))
+        router.register(SIPCallChannel(sip_service))
+
     critical = CriticalHandlerRegistry(router)
     safety_config = config.plugins.get("safety_critical", {})
     if safety_config.get("enabled"):
@@ -264,7 +304,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M7 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M8 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
@@ -284,6 +324,8 @@ async def main(config_path: str) -> None:
     await tasks.aclose()
     if ha_service is not None:
         await ha_service.aclose()
+    if sip_service is not None:
+        await sip_service.aclose()
 
 
 if __name__ == "__main__":
