@@ -153,7 +153,7 @@ memory RO with path safety, approve/deny flips DB (dashboard is where approve/de
 - [x] ares/plugins/dashboard/__init__.py
 - [x] ares/plugins/dashboard/channel.py  (WebChannel + per-user outbox queues)
 - [x] ares/plugins/dashboard/api.py  (FastAPI routes, token auth, thin wrappers)
-- [ ] ares/plugins/dashboard/server.py  (DashboardSource, uvicorn in-loop)
+- [x] ares/plugins/dashboard/server.py  (DashboardSource, uvicorn in-loop)
 - [x] ares/plugins/dashboard/static/index.html  (single-file vanilla JS UI)
 - [ ] instance/main.py updated (register dashboard source + WebChannel)
 - [ ] tests/test_dashboard.py  (token auth required, memory path safety, approve flips DB)
