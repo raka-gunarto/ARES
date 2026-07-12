@@ -101,6 +101,7 @@ from ares.plugins.tools.comms_tools import COMMS_TOOLS
 from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
+from ares.plugins.tools.selfedit_tools import PRCache, build_selfedit_tools
 from ares.plugins.tools.shell_tools import build_shell_tools
 from ares.plugins.tools.task_tools import TASK_TOOLS
 from ares.plugins.tools.time_tools import build_time_tools
@@ -213,6 +214,12 @@ async def main(config_path: str) -> None:
         for t in build_shell_tools(shell_config):
             registry.register(t)
 
+    pr_cache = PRCache()
+    selfedit_config = config.plugins.get("selfedit", {})
+    if selfedit_config.get("enabled"):
+        for t in build_selfedit_tools(selfedit_config, pr_cache):
+            registry.register(t)
+
     services: dict[str, object] = {}
     shutdown_event = asyncio.Event()
 
@@ -265,7 +272,6 @@ async def main(config_path: str) -> None:
             llm=llm,
         )
 
-        # Wire one VoiceSource per configured room
         rooms = voice_config.get("rooms", {})
         mute_events: dict[str, asyncio.Event] = {}
         for room, room_cfg in rooms.items():
@@ -283,7 +289,6 @@ async def main(config_path: str) -> None:
             )
             sources.append(voice_source)
 
-        # Register the TTS channel for voice delivery
         router.register(
             VoiceTTSChannel(
                 rooms,
@@ -296,7 +301,6 @@ async def main(config_path: str) -> None:
     sip_service: object | None = None
     sip_config = config.plugins.get("sip", {})
     if sip_config.get("enabled"):
-        # Build user_uris mapping from configured users
         user_uris = {uid: u.sip_uri for uid, u in config.users.items() if u.sip_uri}
 
         # Create SIP service (raises RuntimeError if pjsua2 not installed)
@@ -309,11 +313,9 @@ async def main(config_path: str) -> None:
         )
         services["sip"] = sip_service
 
-        # Register SIP communication tools
         for t in COMMS_TOOLS:
             registry.register(t)
 
-        # Wire SIP source and channels
         sip_source = SIPSource(bus, sip_config, sip_service)
         sources.append(sip_source)
         router.register(SIPMessageChannel(sip_service))
@@ -345,7 +347,7 @@ async def main(config_path: str) -> None:
         web_channel = WebChannel()
         router.register(web_channel)
         sources.append(
-            DashboardSource(bus, dash_config, web_channel, memory, tasks, priv_store)
+            DashboardSource(bus, dash_config, web_channel, memory, tasks, priv_store, pr_cache.all)
         )
 
     agent = Agent(

@@ -53,6 +53,7 @@ class DashboardSource(BaseSource):
         memory: Any,
         tasks: Any,
         priv_store: Any,
+        prs_provider: Any = None,
     ) -> None:
         """Initialize the dashboard source.
 
@@ -68,6 +69,8 @@ class DashboardSource(BaseSource):
             tasks: TaskStore instance, passed through to `build_app`.
             priv_store: PrivStore instance (or None), passed through to
                 `build_app`.
+            prs_provider: optional zero-arg callable returning the list of
+                open self-edit PRs (§18); defaults to returning an empty list.
 
         Raises:
             ConfigError: If `password` is missing/empty.
@@ -93,6 +96,9 @@ class DashboardSource(BaseSource):
         self.memory = memory
         self.tasks = tasks
         self.priv_store = priv_store
+        # Zero-arg callable returning the list of open self-edit PRs (§18 cache);
+        # defaults to an empty list when self-edit is disabled.
+        self.prs_provider = prs_provider if prs_provider is not None else (lambda: [])
 
         self._start_time: float | None = None
         self._server: "uvicorn.Server | None" = None
@@ -149,7 +155,7 @@ class DashboardSource(BaseSource):
             memory=self.memory,
             tasks=self.tasks,
             priv_store=self.priv_store,
-            prs_provider=lambda: [],
+            prs_provider=self.prs_provider,
             health_provider=self._health_provider,
             static_dir=static_dir,
         )
