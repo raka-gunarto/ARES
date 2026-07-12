@@ -6,7 +6,15 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 bump. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2. ***
+
+PATCH-2 (sbx-runner) done: `deploy/sbx-runner` is the sole sudo entry point ares->ares-sbx,
+installed to /usr/local/sbin (outside the self-edit surface), env-scrubbing; shell_tools prod
+branch execs it with the command as one argv element and no daemon env/cwd. Acceptance PASSED
+in Docker: drops to ares-sbx, secret canary scrubbed via the real run_shell path, ares has no
+other sudo; shellcheck/visudo/bash -n clean. Full suite: 210 passed, 1 skipped (shellcheck,
+covered via Docker). See the PATCH-2 ticklist section + Decisions.
+
 
 v1.2 bump done (both authorised changes landed, M2/M6 history intact):
  1. HA live WebSocket — RESOLVES the M6 Blocker. `home_assistant` extra (`websockets`,
