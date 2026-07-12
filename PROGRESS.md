@@ -174,10 +174,10 @@ tripwires to pass a test; fix the test setup.
 
 ### M13 — Update listener + deploy artifacts  (read spec §14, §19 first)
 - [x] updater/aresupdater.py  (STDLIB ONLY, no ares import; webhook HMAC + poll + safe swap)
-- [ ] deploy/provision.sh  (users, dirs, perms, sudoers, unit install; passes shellcheck + bash -n)
-- [ ] deploy/ares.service
-- [ ] deploy/ares-broker.service
-- [ ] deploy/ares-updater.service
+- [x] deploy/provision.sh  (users, dirs, perms, sudoers, unit install; passes shellcheck + bash -n)
+- [x] deploy/ares.service
+- [x] deploy/ares-broker.service
+- [x] deploy/ares-updater.service
 - [x] ARES_ENV prod tripwires in config.py / secrets.py / shell_tools.py (fatal on readable .env, missing sandbox user)
 - [x] tests/test_updater.py  (HMAC verify accept/reject, smoke-import-abort, no ares import)
 - [x] tests/test_prod_tripwire.py  (prod mode fatal on misconfig)
@@ -267,6 +267,18 @@ tripwires to pass a test; fix the test setup.
 - 2026-07-12 (M12): trimmed 5 self-evident inline comments in main.py so the selfedit +
   prs_provider wiring keeps it at exactly 400/400 (spec §0.10 hard cap). `DashboardSource`
   gained a trailing optional `prs_provider` param (defaults to `lambda: []`).
+- 2026-07-12 (M13): `shellcheck` is not installed in this env and cannot be added (not a
+  pyproject dep — installing it would violate §0). `deploy/provision.sh` is written to
+  shellcheck standards (set -euo pipefail, all expansions quoted, [[ ]]/$(), no backticks)
+  and passes `bash -n`; the 3 units pass `systemd-analyze verify` (only warning is the
+  prod-only /opt/ares/venv/bin/python path being absent in this dev box). Operator should
+  re-run `shellcheck deploy/provision.sh` in the VM per the ticklist.
+- 2026-07-12 (M13): provision.sh grants sudoers `ares ALL=(ares-sbx) NOPASSWD: /bin/bash`
+  to match the ALREADY-BUILT shell_tools.py (M10), which execs `sudo -n -u ares-sbx
+  /bin/bash -lc`. DEPLOYMENT.md mentions a `deploy/sbx-runner` wrapper, but no such wrapper
+  exists in the code and DEPLOYMENT.md is not an implementation input (per CLAUDE.md); the
+  provisioning matches what the daemon actually runs. Spec §15 authorises "sudo -n -u
+  {sandbox_user} /bin/bash -lc {command}".
 
 ## Blockers
 

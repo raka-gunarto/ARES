@@ -1,0 +1,20 @@
+[Unit]
+Description=ARES update listener (deploys operator-merged main; can only restart ares)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as ares-deploy (§14.1): can write /opt/ares and holds exactly one sudoers
+# entry — restart the ares unit. Stdlib-only, so it uses the SYSTEM python3, not
+# the ARES venv. ARES_WEBHOOK_SECRET (for X-Hub-Signature-256 verification)
+# arrives via this EnvironmentFile.
+User=ares-deploy
+Group=ares-deploy
+EnvironmentFile=/etc/ares/updater.env
+ExecStart=/usr/bin/python3 /opt/ares/app/updater/aresupdater.py /etc/ares/updater.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

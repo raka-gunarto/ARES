@@ -1,0 +1,28 @@
+[Unit]
+Description=ARES daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ares
+Group=ares
+WorkingDirectory=/opt/ares/app
+# systemd reads the secrets file as root BEFORE dropping to the ares user, so
+# the process gets the values in its environment while the file itself stays
+# 0600 root:root and unreadable to ares (spec §14.2). ARES_ENV=prod lives here.
+EnvironmentFile=/etc/ares/.env
+ExecStart=/opt/ares/venv/bin/python -m instance.main /etc/ares/config.yaml
+Restart=always
+RestartSec=5
+
+# Filesystem contract (§14.2). NB: NoNewPrivileges is deliberately NOT set —
+# the daemon must keep the single sudoers path that drops it to ares-sbx for
+# run_shell (§15); it still has no sudo of its own.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ares
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
