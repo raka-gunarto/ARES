@@ -6,21 +6,29 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M13 (M12 complete, acceptance passed — real local-git origin: open_pr branches +
-commits into scratch clone only + pushes, live_code_path never written, path-escape rejected,
-get_pr_status reads state, opened PR shows in dashboard /api/prs over real HTTP (token-gated),
-and structurally ARES has no merge tool/route; suite 180 green). Open items carried forward:
-M6 live-HA-WS Blocker; live voice/SIP need hardware/PJSIP. NOTE: instance/main.py is at
-400/400 lines — M13 barely touches it (tripwires live in config.py/secrets.py/shell_tools.py),
-but any main.py addition MUST reclaim first. Next action: begin M13 (Update listener + deploy
-artifacts + prod tripwires) — READ spec §19 (done) and §14 FIRST. HARD security rules:
-updater/aresupdater.py is STDLIB-ONLY and must NEVER import `ares` (test asserts this, like
-the broker); webhook verifies X-Hub-Signature-256 HMAC vs ARES_WEBHOOK_SECRET; poll fallback
-via git ls-remote; safe swap = temp worktree + smoke-import + ABORT-on-failure (never swap a
-broken tree), serialised with a lock; restart via sudo systemctl (fixed argv). Prod tripwires:
-prod fails fast on a readable .env (secrets must come from os.environ) and on missing sandbox
-user separation (shell/selfedit refuse own-uid — already partly done). Do NOT weaken prod
-tripwires to pass a test; fix the test setup.
+*** ALL MILESTONES COMPLETE (M0–M13). ***
+
+M13 done, acceptance passed — real local-git origin drove the updater end-to-end: poll
+detected the new main SHA, smoke-import gate -> swap release symlink -> issue restart (smoke
++ restart mocked), RELEASED_SHA updated; a FAILING smoke import ABORTED the swap (no symlink
+change, no restart, running deploy untouched); webhook X-Hub-Signature-256 HMAC accepts
+correct + rejects wrong-secret/tampered/missing; updater imports nothing from `ares` and is
+stdlib-only (AST-asserted); provision.sh passes `bash -n`; ARES_ENV=prod fatals on a readable
+.env and on missing sandbox-user separation, and EnvSecretStore is os.environ-only in prod.
+Full suite: 199 passed.
+
+Open (non-blocking, environment-limited — NOT code gaps):
+ - M6 live Home-Assistant WebSocket: needs a live HA instance (Blocker recorded below).
+ - Live voice / SIP: need audio hardware + a real PJSIP build + SIP server; implemented at
+   the spec §10 import + config-validation level with guarded imports.
+ - `shellcheck` not installed in this env (see M13 Decision); provision.sh written to its
+   standards and `bash -n`-clean — operator should run shellcheck in the VM.
+ - Real GitHub PR creation / real prod VM deploy are operator steps (DEPLOYMENT.md); the
+   GitHub REST seams + git half were exercised against a local origin with the REST calls
+   mocked (M12 Decision).
+
+No next action — the build is complete. Any further work is operator deployment or
+post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Ticklist
 
@@ -181,7 +189,7 @@ tripwires to pass a test; fix the test setup.
 - [x] ARES_ENV prod tripwires in config.py / secrets.py / shell_tools.py (fatal on readable .env, missing sandbox user)
 - [x] tests/test_updater.py  (HMAC verify accept/reject, smoke-import-abort, no ares import)
 - [x] tests/test_prod_tripwire.py  (prod mode fatal on misconfig)
-- [ ] M13 acceptance test passed (poll detects SHA, swap+restart, webhook verify, tripwire fires)
+- [x] M13 acceptance test passed (poll detects SHA, swap+restart, webhook verify, tripwire fires)
 
 ## Decisions
 
@@ -279,6 +287,10 @@ tripwires to pass a test; fix the test setup.
   exists in the code and DEPLOYMENT.md is not an implementation input (per CLAUDE.md); the
   provisioning matches what the daemon actually runs. Spec §15 authorises "sudo -n -u
   {sandbox_user} /bin/bash -lc {command}".
+- 2026-07-12 (M13): no real GitHub/webhook/prod-VM here, so the M13 acceptance drove the
+  updater against a LOCAL bare git origin (real poll/ls-remote/clone/worktree/symlink swap)
+  and mocked only `smoke_import` + `run_restart`; the prod tripwire was asserted in-process
+  via `enforce_prod_tripwires` (ARES_ENV=prod). This is the §10-mandated level in this env.
 
 ## Blockers
 
