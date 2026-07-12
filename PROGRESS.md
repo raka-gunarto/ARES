@@ -179,8 +179,8 @@ tripwires to pass a test; fix the test setup.
 - [ ] deploy/ares-broker.service
 - [ ] deploy/ares-updater.service
 - [x] ARES_ENV prod tripwires in config.py / secrets.py / shell_tools.py (fatal on readable .env, missing sandbox user)
-- [ ] tests/test_updater.py  (HMAC verify accept/reject, smoke-import-abort, no ares import)
-- [ ] tests/test_prod_tripwire.py  (prod mode fatal on misconfig)
+- [x] tests/test_updater.py  (HMAC verify accept/reject, smoke-import-abort, no ares import)
+- [x] tests/test_prod_tripwire.py  (prod mode fatal on misconfig)
 - [ ] M13 acceptance test passed (poll detects SHA, swap+restart, webhook verify, tripwire fires)
 
 ## Decisions
