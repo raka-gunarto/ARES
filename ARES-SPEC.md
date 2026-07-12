@@ -243,6 +243,7 @@ ares/
     aresupdater.py
   deploy/                # static operator artifacts (see DEPLOYMENT.md)
     provision.sh         # in-VM provisioning: users, dirs, perms, sudoers, units
+    sbx-runner           # sole sudo entry point ares -> ares-sbx; installed to /usr/local/sbin
     ares.service
     ares-broker.service
     ares-updater.service
@@ -1279,13 +1280,17 @@ Behaviour:
 - Rejects (returns `ok=False`, no execution) if `command` is empty or
   `timeout_s > timeout_max_s`.
 - Execution model:
-  - **prod:** `sudo -n -u {sandbox_user} /bin/bash -lc {command}` via
-    `asyncio.create_subprocess_exec`, cwd = `workdir`, with a restricted env
-    (PATH, HOME, LANG only — never the ARES secret env). The single sudoers
-    entry permitting `ares → ares-sbx` (NOPASSWD, that exact runner) is created
-    by `provision.sh`; this is drop-privilege only, never escalation.
-  - **dev (`sandbox_user=""`):** run directly, same restricted env, and prepend
-    a one-line warning to the result that the sandbox user is not configured.
+  - **prod:** `sudo -n -u {sandbox_user} /usr/local/sbin/ares-sbx-runner {command}`
+    via `asyncio.create_subprocess_exec` — **argv list form, with `{command}` as a
+    single element**. Never build a shell string on the daemon side; never
+    `shell=True`. The runner scrubs the environment and sets cwd itself, so the
+    daemon does not pass an env or cwd through. The single sudoers entry
+    permitting `ares → ares-sbx` (NOPASSWD, that exact runner) is created by
+    `provision.sh`; this is drop-privilege only, never escalation.
+  - **dev (`sandbox_user=""`):** run directly (`/bin/bash -lc {command}`) with a
+    restricted env (PATH, HOME, LANG only — never the ARES secret env) and cwd =
+    `workdir`, and prepend a one-line warning to the result that the sandbox user
+    is not configured.
 - Kill the process group on timeout; return combined stdout+stderr capped at
   4000 chars + exit code. Non-zero exit is `ok=True` with the output (the LLM
   decides what a failure means) — infra failures (spawn error, timeout) are

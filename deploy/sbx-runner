@@ -1,0 +1,22 @@
+#!/bin/bash
+# ares-sbx-runner — the sole sudo entry point from the `ares` daemon to the
+# `ares-sbx` sandbox user. Takes exactly one argument: the command string.
+# Scrubs the environment unconditionally so the daemon's secret env can never
+# reach a sandbox shell, regardless of sudoers configuration.
+set -eu
+
+[ "$#" -eq 1 ] || { echo "usage: ares-sbx-runner <command>" >&2; exit 64; }
+
+cd /home/ares-sbx || exit 65
+
+# Hard backstops; the daemon also enforces its own timeout and kills the group.
+ulimit -t 300      # CPU seconds
+ulimit -f 1048576  # max file size (blocks)
+ulimit -u 256      # max processes
+
+exec /usr/bin/env -i \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  HOME=/home/ares-sbx \
+  LANG=C.UTF-8 \
+  SHELL=/bin/bash \
+  /bin/bash -lc "$1"

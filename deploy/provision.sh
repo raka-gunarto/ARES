@@ -16,6 +16,7 @@ STATE_DIR=/var/lib/ares
 SBX_HOME=/home/ares-sbx
 SUDOERS_FILE=/etc/sudoers.d/ares
 SYSTEMD_DIR=/etc/systemd/system
+RUNNER_DST=/usr/local/sbin/ares-sbx-runner
 
 log() { printf '[provision] %s\n' "$*"; }
 die() { printf '[provision] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -65,13 +66,22 @@ install -d -o ares -g ares -m 0700 "${STATE_DIR}/memory"
 # sandbox scratch clone, owned by ares-sbx.
 install -d -o ares-sbx -g ares-sbx -m 0700 "${SBX_HOME}/scratch"
 
-# 3. The two narrow sudoers entries (§14.1). Nothing else gets sudo.
-#  - ares may drop to ares-sbx to run sandboxed shells (§15 uses /bin/bash -lc).
+# 3. Install the sandbox runner OUTSIDE the app tree (§15). It is the sole sudo
+# entry point ares -> ares-sbx and it scrubs the environment (env -i). Placing
+# it in /usr/local/sbin (root-owned, 0755) keeps it out of the self-edit
+# surface: ARES cannot weaken its own sandbox entry point via a merged PR;
+# changing it requires re-running this provisioner.
+install -o root -g root -m 0755 "${APP_DIR}/deploy/sbx-runner" "${RUNNER_DST}"
+log "installed sandbox runner ${RUNNER_DST}"
+
+# 4. The two narrow sudoers entries (§14.1). Nothing else gets sudo.
+#  - ares may drop to ares-sbx ONLY via the runner (§15); no other command.
 #  - ares-deploy may restart the ares unit (the updater's one privileged action).
+# There is deliberately NO sudoers rule granting `ares` any root.
 umask 077
-cat > "${SUDOERS_FILE}.tmp" <<'EOF'
+cat > "${SUDOERS_FILE}.tmp" <<EOF
 # Managed by ARES deploy/provision.sh — do not edit by hand.
-ares ALL=(ares-sbx) NOPASSWD: /bin/bash
+ares ALL=(ares-sbx) NOPASSWD: ${RUNNER_DST}
 ares-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ares
 EOF
 chmod 0440 "${SUDOERS_FILE}.tmp"
@@ -83,7 +93,7 @@ else
     die "sudoers validation failed; not installing"
 fi
 
-# 4. systemd units.
+# 5. systemd units.
 for unit in ares.service ares-broker.service ares-updater.service; do
     install -o root -g root -m 0644 "${APP_DIR}/deploy/${unit}" "${SYSTEMD_DIR}/${unit}"
     log "installed ${unit}"

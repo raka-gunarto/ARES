@@ -91,9 +91,17 @@ the thing that creates the security boundary. It:
   - `/etc/ares/broker.json`, `/etc/ares/updater.json` → `0600 root:root`.
   - `/var/lib/ares` → `0700 ares:ares` (state, memory, DBs).
   - `/home/ares-sbx/scratch` → `ares-sbx` (self-edit clone).
+- Installs `deploy/sbx-runner` to **`/usr/local/sbin/ares-sbx-runner`**
+  (`root:root`, `0755`) — the sole sudo entry point `ares → ares-sbx`. It is
+  installed **outside the app tree deliberately**: it is therefore not part of
+  the self-edit surface, so ARES cannot weaken its own sandbox entry point via a
+  merged PR — changing it requires re-running `provision.sh`, a deliberate
+  operator action. The runner scrubs the environment (`env -i`) so the daemon's
+  secret env can never reach a sandbox shell, regardless of sudoers config.
 - Installs the **sudoers drop-ins**, each a single exact rule:
-  - `ares ALL=(ares-sbx) NOPASSWD: /opt/ares/app/deploy/sbx-runner` — lets the
-    daemon drop **down** to the sandbox user to run shells. Not escalation.
+  - `ares ALL=(ares-sbx) NOPASSWD: /usr/local/sbin/ares-sbx-runner` — lets the
+    daemon drop **down** to the sandbox user to run shells, via the runner only.
+    Not escalation.
   - `ares-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ares` — lets
     the updater restart the daemon after a verified update. Nothing else.
   - **No sudoers rule gives `ares` any root.** Root actions go through the
