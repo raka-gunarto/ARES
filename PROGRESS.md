@@ -205,15 +205,15 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] M13 acceptance test passed (poll detects SHA, swap+restart, webhook verify, tripwire fires)
 
 ### v1.2 — HA live WebSocket  (resolves the M6 Blocker; read §7.3 + §12)
-- [ ] ARES-SPEC.md §12 — add `home_assistant` extra (`websockets`)
+- [x] ARES-SPEC.md §12 — add `home_assistant` extra (`websockets`)
 - [ ] pyproject.toml — `home_assistant = ["websockets"]` extra
 - [ ] ares/plugins/sources/home_assistant.py — WS connect/auth/subscribe(state_changed)/reconnect backoff (2->60s) in start(), guarded `websockets` import; feeds existing process_state_changed/process_ares_event
 - [ ] tests/test_ha_ws.py — WS auth handshake + subscribe + message dispatch (mock websockets)
 - [ ] v1.2 HA WebSocket acceptance (auth, subscribe, a state_changed message flows through the filter to an emitted event; reconnect on drop)
 
 ### PATCH-1 — Prompt hardening (spec v1.2)  (retrofit into completed M2)
-- [ ] ARES-SPEC.md updated to v1.2 (§4.11 RULES block, §4.10 event fencing)
-- [ ] ARES-SYSTEM-PROMPT.md created
+- [x] ARES-SPEC.md updated to v1.2 (§4.11 RULES block, §4.10 event fencing)
+- [x] ARES-SYSTEM-PROMPT.md created
 - [ ] ares/core/prompt.py — RULES constant, fixed, not config-overridable
 - [ ] ares/core/agent.py — non-user events fenced as [EVENT ...]
 - [ ] instance/config.yaml — persona contains persona text only
