@@ -163,7 +163,7 @@ replacing the current `lambda: []`).
 - [x] M11 acceptance test passed (chat round-trip, approvals, RO memory)
 
 ### M12 — Self-edit -> PR  (read spec §18 first)
-- [ ] ares/plugins/tools/selfedit_tools.py  (open_pr, get_pr_status; scratch repo ONLY)
+- [x] ares/plugins/tools/selfedit_tools.py  (open_pr, get_pr_status; scratch repo ONLY)
 - [ ] instance/main.py updated (register selfedit tools)
 - [ ] tests/test_selfedit.py  (path escape in files rejected, never writes live code path)
 - [ ] M12 acceptance test passed (PR opened against test repo, cannot merge, status read)
