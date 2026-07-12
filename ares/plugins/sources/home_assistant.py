@@ -1,16 +1,18 @@
 """Home Assistant source and REST service, per spec §7.3.
 
-BLOCKER (recorded in PROGRESS.md): §12 provides no WebSocket client (httpx
-has no WS support) and §0 forbids adding dependencies. The live WS transport
-(`ws_url`, subscribe_events, reconnect/backoff) is therefore BLOCKED. HAService
-implements the full REST surface and HomeAssistantSource implements the full
-filter/emit pipeline as directly-callable methods; `start()` logs the blocker
-and idles rather than opening a WebSocket.
+The live WS transport is implemented: connect to `ws_url` -> authenticate
+with the long-lived token -> subscribe_events (`state_changed` and
+`ares_event`) -> dispatch incoming events into the existing filter methods
+(`process_state_changed` / `process_ares_event`) -> reconnect forever with
+exponential backoff (2s -> 60s cap) on any connection error. Requires the
+optional `websockets` extra (`pip install -e ".[home_assistant]"`); without
+it, `start()` raises RuntimeError.
 """
 from __future__ import annotations
 
 import asyncio
 import fnmatch
+import json
 import tempfile
 import time
 from pathlib import Path
@@ -23,6 +25,14 @@ from ares.core.source import BaseSource
 from ares.core.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+# Guarded import of the optional websockets extra (spec §12).
+try:
+    import websockets
+
+    _HAVE_WS = True
+except ImportError:
+    _HAVE_WS = False
 
 _PRIORITY_MAP: dict[str, Priority] = {
     "CRITICAL": Priority.CRITICAL,
@@ -153,6 +163,8 @@ class HomeAssistantSource(BaseSource):
         self.priority_rules: list[dict] = config.get("priority_rules", [])
         self.entity_rooms: dict[str, str] = config.get("entity_rooms", {})
         self._last_emit: dict[str, float] = {}
+        self._ws_url: str | None = config.get("ws_url")
+        self._token: str | None = config.get("token")
 
     def _resolve_priority(self, entity_id: str) -> Priority:
         """First matching priority_rules glob wins; default NORMAL."""
@@ -227,12 +239,97 @@ class HomeAssistantSource(BaseSource):
             room=data.get("location"),
         )
 
-    async def start(self) -> None:
-        """Idle: the live WS transport is blocked (see module docstring)."""
-        log.warning(
-            "home_assistant: live WebSocket transport unavailable (no WS "
-            "dependency in spec §12); source idle — events must be injected "
-            "via process_state_changed. See PROGRESS.md Blockers."
+    async def _authenticate(self, ws) -> bool:
+        """Perform the HA WS auth handshake.
+
+        Args:
+            ws: The open websocket connection.
+
+        Returns:
+            True on `auth_ok`, False on `auth_invalid` (logged, not raised).
+        """
+        raw = await ws.recv()
+        msg = json.loads(raw)
+        if msg.get("type") != "auth_required":
+            log.error(
+                "home_assistant: expected auth_required, got %r", msg.get("type")
+            )
+
+        await ws.send(json.dumps({"type": "auth", "access_token": self._token}))
+
+        raw = await ws.recv()
+        msg = json.loads(raw)
+        if msg.get("type") == "auth_ok":
+            return True
+        if msg.get("type") == "auth_invalid":
+            log.error(
+                "home_assistant: authentication failed: %s", msg.get("message")
+            )
+            return False
+        log.error("home_assistant: unexpected auth reply type %r", msg.get("type"))
+        return False
+
+    async def _subscribe(self, ws) -> None:
+        """Subscribe to state_changed and ares_event over the WS connection."""
+        await ws.send(
+            json.dumps(
+                {"id": 1, "type": "subscribe_events", "event_type": "state_changed"}
+            )
         )
+        await ws.send(
+            json.dumps(
+                {"id": 2, "type": "subscribe_events", "event_type": "ares_event"}
+            )
+        )
+
+    async def _receive_loop(self, ws) -> None:
+        """Read events from the WS connection and dispatch into the filter pipeline.
+
+        Loops until `_stopping` is set or `ws.recv()` raises (e.g. connection
+        closed), in which case the exception propagates to `start()` for
+        reconnect handling.
+        """
         while not self._stopping:
-            await asyncio.sleep(1)
+            raw = await ws.recv()
+            msg = json.loads(raw)
+            if msg.get("type") != "event":
+                continue
+            event = msg.get("event", {})
+            event_type = event.get("event_type")
+            data = event.get("data", {})
+            if event_type == "state_changed":
+                await self.process_state_changed(data)
+            elif event_type == "ares_event":
+                await self.process_ares_event(data)
+            # else: ignore (e.g. "result", "pong")
+
+    async def start(self) -> None:
+        """Connect to Home Assistant's WS API and dispatch events, per spec §7.3.
+
+        Reconnects forever with exponential backoff (2s -> 60s cap) on any
+        connection error, until `stop()` is called.
+
+        Raises:
+            RuntimeError: If the `websockets` extra is not installed.
+        """
+        if not _HAVE_WS:
+            raise RuntimeError(
+                "home_assistant: the 'websockets' extra is required for the "
+                "live transport; pip install -e '.[home_assistant]'"
+            )
+
+        delay = 2
+        while not self._stopping:
+            try:
+                async with websockets.connect(self._ws_url) as ws:
+                    if await self._authenticate(ws):
+                        await self._subscribe(ws)
+                        await self._receive_loop(ws)
+                delay = 2  # reset after a cleanly-established+run connection
+            except Exception:
+                log.exception("home_assistant: WS connection error")
+
+            if self._stopping:
+                break
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60)
