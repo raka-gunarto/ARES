@@ -223,6 +223,15 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] CLAUDE.md — RULES invariant added to Security boundaries
 - [x] PATCH-1 acceptance passed (see Decisions: #1/#2/#4 full; #3 structural-only — no live LLM)
 
+### PATCH-2 — Define ares-sbx-runner (spec bug: dangling sudoers reference)
+- [x] deploy/sbx-runner  (shellcheck + sh -n clean)
+- [x] ARES-SPEC.md §15 prod exec model + §3 layout updated
+- [x] deploy/provision.sh installs runner to /usr/local/sbin, sudoers drop-in via visudo -c
+- [x] DEPLOYMENT.md §3 sudoers rule corrected
+- [x] ares/plugins/tools/shell_tools.py prod branch execs the runner (M10 built)
+- [x] tests/test_shell.py argv-list assertions
+- [x] PATCH-2 acceptance passed (Docker: runner drops to ares-sbx, secret canary scrubbed, ares has no other sudo)
+
 ## Decisions
 
 - 2026-07-12 (v1.2): PATCH-1 applied — prompt-layer injection defenses retrofitted into
@@ -235,6 +244,22 @@ post-v1 scope (spec §1 out-of-scope list is binding).
   boundary; the change request's trailing "Budget check:" paragraph is implementer guidance
   and is NOT part of RULES (operator confirmed). The block is byte-identical across
   prompt.py, ARES-SPEC.md §4.11, and ARES-SYSTEM-PROMPT.md.
+- 2026-07-12 (PATCH-2): sbx-runner was referenced in DEPLOYMENT but never specced; defined it
+  and moved it to /usr/local/sbin (outside the app tree) so it is not in the self-edit surface.
+  The runner is the sole sudo entry point ares -> ares-sbx and scrubs the env (env -i).
+  shell_tools prod branch now execs it with the command as ONE argv element and passes no
+  env/cwd (the runner owns both). DEVIATION FROM THE PROVIDED SCRIPT (flagged): the change
+  request's `#!/bin/sh` breaks on the deploy target — Debian/Ubuntu `/bin/sh` is dash, and
+  `ulimit -u` is an illegal option there, so with `set -eu` the runner would abort BEFORE
+  exec'ing the command (reintroducing the very run_shell-fails-in-prod bug PATCH-2 fixes).
+  Verified in Docker (debian:stable-slim dash rejects `ulimit -u`). Minimal fix: shebang
+  `#!/bin/bash` (the runner already exec's /bin/bash; bash supports -t/-u/-f). Body byte-
+  identical otherwise; shellcheck clean (shell=bash), sh -n + bash -n clean.
+- 2026-07-12 (PATCH-2): acceptance run in Docker (users created, runner + sudoers installed):
+  as the `ares` user, `sudo -n -u ares-sbx /usr/local/sbin/ares-sbx-runner 'whoami; ...'`
+  returns `ares-sbx` with a tiny env; a daemon SECRET_CANARY does NOT survive into the shell
+  (env -i scrub); `sudo -u ares` for anything but the runner is denied. shellcheck now runs in
+  this env via the koalaman/shellcheck Docker image (resolves the earlier M13 shellcheck gap).
 - 2026-07-12 (v1.2): PATCH-1 acceptance — #1 suite 203 green (incl test_prompt.py); #2 assembled
   prompt prints PERSONA -> CONTEXT -> verbatim RULES in order; #4 regression green (agent tool
   loop, HA filter, task reminder paths all pass). #3 injection smoke test is BEHAVIORALLY
