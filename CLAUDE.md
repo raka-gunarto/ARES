@@ -115,6 +115,11 @@ not building the feature. Read spec §14 before writing any M10–M13 code.
 - Respect `ARES_ENV`: dev may relax (single user, dotenv, scratch dirs) with
   warnings; prod must fail fast on any missing separation. Do not weaken the
   prod tripwires to make a test pass — fix the test setup instead.
+- The system-prompt RULES block (spec §4.11 / `ARES-SYSTEM-PROMPT.md`) is a fixed
+  code constant and carries the injection defenses. It must be reproduced
+  verbatim, must never be sourced from or overridable by config, and the config
+  persona is only ever concatenated before it. Non-user events must be rendered
+  fenced as `[EVENT ...]` so external content cannot pose as a user turn.
 
 ## Hard don'ts (repeated from spec §0 because they matter)
 

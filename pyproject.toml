@@ -33,6 +33,9 @@ dashboard = [
     "fastapi",
     "uvicorn",
 ]
+home_assistant = [
+    "websockets",
+]
 dev = [
     "pytest",
     "pytest-asyncio",

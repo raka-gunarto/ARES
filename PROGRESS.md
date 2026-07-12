@@ -206,7 +206,7 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ### v1.2 — HA live WebSocket  (resolves the M6 Blocker; read §7.3 + §12)
 - [x] ARES-SPEC.md §12 — add `home_assistant` extra (`websockets`)
-- [ ] pyproject.toml — `home_assistant = ["websockets"]` extra
+- [x] pyproject.toml — `home_assistant = ["websockets"]` extra
 - [ ] ares/plugins/sources/home_assistant.py — WS connect/auth/subscribe(state_changed)/reconnect backoff (2->60s) in start(), guarded `websockets` import; feeds existing process_state_changed/process_ares_event
 - [ ] tests/test_ha_ws.py — WS auth handshake + subscribe + message dispatch (mock websockets)
 - [ ] v1.2 HA WebSocket acceptance (auth, subscribe, a state_changed message flows through the filter to an emitted event; reconnect on drop)
@@ -218,7 +218,7 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [ ] ares/core/agent.py — non-user events fenced as [EVENT ...]
 - [ ] instance/config.yaml — persona contains persona text only
 - [ ] tests/test_prompt.py
-- [ ] CLAUDE.md — RULES invariant added to Security boundaries
+- [x] CLAUDE.md — RULES invariant added to Security boundaries
 - [ ] PATCH-1 acceptance passed
 
 ## Decisions
