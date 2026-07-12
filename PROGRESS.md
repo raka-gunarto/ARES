@@ -165,7 +165,7 @@ replacing the current `lambda: []`).
 ### M12 — Self-edit -> PR  (read spec §18 first)
 - [x] ares/plugins/tools/selfedit_tools.py  (open_pr, get_pr_status; scratch repo ONLY)
 - [x] instance/main.py updated (register selfedit tools)
-- [ ] tests/test_selfedit.py  (path escape in files rejected, never writes live code path)
+- [x] tests/test_selfedit.py  (path escape in files rejected, never writes live code path)
 - [ ] M12 acceptance test passed (PR opened against test repo, cannot merge, status read)
 
 ### M13 — Update listener + deploy artifacts  (read spec §14, §19 first)
