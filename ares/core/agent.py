@@ -76,10 +76,8 @@ class Agent:
                     event.payload.get("text") or event.payload.get("transcript") or ""
                 )
             else:
-                event_text = (
-                    f"[event] source={event.source} type={event.type} "
-                    f"payload={json.dumps(event.payload, separators=(',', ':'), default=str)}"
-                )
+                payload_json = json.dumps(event.payload, separators=(",", ":"), default=str)
+                event_text = f"[EVENT source={event.source} type={event.type}]\n{payload_json}"
 
             # STEP 5
             messages = [system] + list(session.history) + [
