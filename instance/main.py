@@ -83,6 +83,8 @@ from ares.plugins.channels.sip_call import SIPCallChannel
 from ares.plugins.channels.sip_message import SIPMessageChannel
 from ares.plugins.channels.voice_tts import VoiceTTSChannel
 from ares.plugins.critical.safety import FireHandler, IntruderHandler
+from ares.plugins.dashboard.channel import WebChannel
+from ares.plugins.dashboard.server import DashboardSource
 from ares.plugins.sip.client import SIPService
 from ares.plugins.sip.source import SIPSource
 from ares.plugins.sources.cli import CLISource
@@ -219,9 +221,7 @@ async def main(config_path: str) -> None:
         try:
             loop.add_signal_handler(sig, shutdown_event.set)
         except NotImplementedError:
-            # Signal handlers aren't supported on this platform (e.g. some
-            # Windows event loops); fall back to the KeyboardInterrupt path
-            # around asyncio.run() below.
+            # Signal handlers unsupported here; KeyboardInterrupt path handles it.
             log.warning("cannot install handler for %s on this platform", sig)
 
     sources: list[BaseSource] = []
@@ -340,6 +340,14 @@ async def main(config_path: str) -> None:
         priv_source = PrivilegeSource(bus, priv_config, priv_store)
         sources.append(priv_source)
 
+    dash_config = config.plugins.get("dashboard", {})
+    if dash_config.get("enabled"):
+        web_channel = WebChannel()
+        router.register(web_channel)
+        sources.append(
+            DashboardSource(bus, dash_config, web_channel, memory, tasks, priv_store)
+        )
+
     agent = Agent(
         llm=llm,
         registry=registry,
@@ -356,7 +364,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M10 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES M11 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 
