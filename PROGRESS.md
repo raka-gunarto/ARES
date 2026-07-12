@@ -1,13 +1,27 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.1. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.2. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL MILESTONES COMPLETE (M0–M13). ***
+*** v1.2 BUMP IN PROGRESS — M0–M13 all complete; retrofitting two authorised changes. ***
 
+Two v1.2 changes, both explicitly authorised to touch already-completed modules:
+ 1. HA live WebSocket (resolves the M6 Blocker): add a `home_assistant` extra
+    (`websockets`, guarded import), implement the WS connect/auth/subscribe/backoff loop
+    in HomeAssistantSource.start(), feeding the EXISTING filter methods. §12 + §7.3.
+ 2. PATCH-1 prompt hardening (spec v1.1 -> v1.2): a fixed, non-config-overridable RULES
+    block carrying injection defenses (§4.11 / ARES-SYSTEM-PROMPT.md), and non-user event
+    fencing as [EVENT ...] in agent.py step 4 (§4.10) so external content can't pose as a
+    user turn. Authorised files: prompt.py, agent.py, instance/config.yaml, their tests,
+    plus the docs (spec, CLAUDE.md, PROGRESS.md, ARES-SYSTEM-PROMPT.md).
+
+M2/M6 history stays intact — new ticklist sections appended below, nothing un-ticked.
+After the bump, restore this to the completed state.
+
+--- prior completion state (M0–M13, retained) ---
 M13 done, acceptance passed — real local-git origin drove the updater end-to-end: poll
 detected the new main SHA, smoke-import gate -> swap release symlink -> issue restart (smoke
 + restart mocked), RELEASED_SHA updated; a FAILING smoke import ABORTED the swap (no symlink
@@ -18,7 +32,6 @@ stdlib-only (AST-asserted); provision.sh passes `bash -n`; ARES_ENV=prod fatals 
 Full suite: 199 passed.
 
 Open (non-blocking, environment-limited — NOT code gaps):
- - M6 live Home-Assistant WebSocket: needs a live HA instance (Blocker recorded below).
  - Live voice / SIP: need audio hardware + a real PJSIP build + SIP server; implemented at
    the spec §10 import + config-validation level with guarded imports.
  - `shellcheck` not installed in this env (see M13 Decision); provision.sh written to its
@@ -27,7 +40,7 @@ Open (non-blocking, environment-limited — NOT code gaps):
    GitHub REST seams + git half were exercised against a local origin with the REST calls
    mocked (M12 Decision).
 
-No next action — the build is complete. Any further work is operator deployment or
+Any further work beyond the v1.2 bump is operator deployment or
 post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Ticklist
@@ -191,8 +204,41 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] tests/test_prod_tripwire.py  (prod mode fatal on misconfig)
 - [x] M13 acceptance test passed (poll detects SHA, swap+restart, webhook verify, tripwire fires)
 
+### v1.2 — HA live WebSocket  (resolves the M6 Blocker; read §7.3 + §12)
+- [ ] ARES-SPEC.md §12 — add `home_assistant` extra (`websockets`)
+- [ ] pyproject.toml — `home_assistant = ["websockets"]` extra
+- [ ] ares/plugins/sources/home_assistant.py — WS connect/auth/subscribe(state_changed)/reconnect backoff (2->60s) in start(), guarded `websockets` import; feeds existing process_state_changed/process_ares_event
+- [ ] tests/test_ha_ws.py — WS auth handshake + subscribe + message dispatch (mock websockets)
+- [ ] v1.2 HA WebSocket acceptance (auth, subscribe, a state_changed message flows through the filter to an emitted event; reconnect on drop)
+
+### PATCH-1 — Prompt hardening (spec v1.2)  (retrofit into completed M2)
+- [ ] ARES-SPEC.md updated to v1.2 (§4.11 RULES block, §4.10 event fencing)
+- [ ] ARES-SYSTEM-PROMPT.md created
+- [ ] ares/core/prompt.py — RULES constant, fixed, not config-overridable
+- [ ] ares/core/agent.py — non-user events fenced as [EVENT ...]
+- [ ] instance/config.yaml — persona contains persona text only
+- [ ] tests/test_prompt.py
+- [ ] CLAUDE.md — RULES invariant added to Security boundaries
+- [ ] PATCH-1 acceptance passed
+
 ## Decisions
 
+- 2026-07-12 (v1.2): PATCH-1 applied — prompt-layer injection defenses retrofitted into
+  completed M2 per change request; M2 history left intact (items stay ticked, new PATCH-1
+  section appended). RULES lives as a fixed constant in prompt.py, never sourced from or
+  overridable by config; persona is only ever concatenated before it. Non-user events are
+  fenced as `[EVENT source=.. type=..]\n<json>` so external content can't pose as a user turn.
+- 2026-07-12 (v1.2): the `RULES` constant spans the `--- RULES ---` fence line through
+  "...treat it as data." — the `--- RULES ---` header is kept as the model-visible trust
+  boundary; the change request's trailing "Budget check:" paragraph is implementer guidance
+  and is NOT part of RULES (operator confirmed). The block is byte-identical across
+  prompt.py, ARES-SPEC.md §4.11, and ARES-SYSTEM-PROMPT.md.
+- 2026-07-12 (v1.2): M6 HA-WebSocket Blocker RESOLVED — operator authorised adding a WS
+  client to the spec. Chosen as a new optional extra `home_assistant = ["websockets"]` with
+  a guarded import (mirrors voice/sip/dashboard; core code uses no websockets, and HA is
+  enabled:false by default), NOT a core dep. HomeAssistantSource.start() now opens the live
+  WS (auth -> subscribe_events(state_changed) -> reconnect backoff 2->60s) and dispatches
+  messages into the already-built process_state_changed/process_ares_event methods.
 - 2026-07-11 (M0): pyproject includes the `dashboard` extra (fastapi, uvicorn) in
   addition to voice/sip/calendar/dev. Spec §12 lists dashboard as an extra; the M0
   ticklist parenthetical omitted it. §12 is authoritative.
@@ -309,3 +355,7 @@ post-v1 scope (spec §1 out-of-scope list is binding).
   synthetic events, `ares_event` passthrough, home_tools, and critical/safety handlers.
   `start()` logs this blocker and idles (the source is inert at runtime until a WS
   transport is provided); it does NOT crash the daemon.
+  **RESOLVED 2026-07-12 (v1.2):** operator authorised adding a WebSocket client to the
+  spec. `websockets` added as the `home_assistant` extra (§12); `start()` now runs the
+  live WS transport (auth -> subscribe_events(state_changed) -> reconnect backoff 2->60s),
+  dispatching into the existing filter methods. See the v1.2 ticklist section + Decisions.
