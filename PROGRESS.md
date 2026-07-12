@@ -150,11 +150,11 @@ memory RO with path safety, approve/deny flips DB (dashboard is where approve/de
 - [x] M10 acceptance test passed (spec §10) — dev mode: run_shell+warning, request_privilege→pending, broker executes allowlisted install→done, non-allowlisted rejected, privilege_update reaches agent
 
 ### M11 — Web dashboard  (read spec §17 first)
-- [ ] ares/plugins/dashboard/__init__.py
-- [ ] ares/plugins/dashboard/channel.py  (WebChannel + per-user outbox queues)
-- [ ] ares/plugins/dashboard/api.py  (FastAPI routes, token auth, thin wrappers)
+- [x] ares/plugins/dashboard/__init__.py
+- [x] ares/plugins/dashboard/channel.py  (WebChannel + per-user outbox queues)
+- [x] ares/plugins/dashboard/api.py  (FastAPI routes, token auth, thin wrappers)
 - [ ] ares/plugins/dashboard/server.py  (DashboardSource, uvicorn in-loop)
-- [ ] ares/plugins/dashboard/static/index.html  (single-file vanilla JS UI)
+- [x] ares/plugins/dashboard/static/index.html  (single-file vanilla JS UI)
 - [ ] instance/main.py updated (register dashboard source + WebChannel)
 - [ ] tests/test_dashboard.py  (token auth required, memory path safety, approve flips DB)
 - [ ] M11 acceptance test passed (chat round-trip, approvals, RO memory)
