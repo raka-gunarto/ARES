@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import getpass
 import os
+import pathlib
 import pytest
+import shutil
+import subprocess
 
 from ares.plugins.tools.shell_tools import RunShell
 
@@ -113,3 +116,113 @@ async def test_timeout_default_applies():
 
     assert result.ok is True
     assert "quick" in result.content
+
+
+@pytest.mark.asyncio
+async def test_prod_builds_runner_argv_command_single_element(monkeypatch):
+    """Test that prod mode builds runner argv with command as single element."""
+    monkeypatch.setenv("ARES_ENV", "prod")
+    monkeypatch.setattr("ares.plugins.tools.shell_tools.getpass.getuser", lambda: "ares")
+
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+
+        class _P:
+            returncode = 0
+            pid = 12345
+
+            async def communicate(self):
+                return (b"ok-output", None)
+
+        return _P()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    sh = RunShell("ares-sbx", "/home/ares-sbx")
+    res = await sh.run(None, command="echo hello")
+
+    assert res.ok is True
+    assert list(captured["argv"]) == [
+        "sudo",
+        "-n",
+        "-u",
+        "ares-sbx",
+        "/usr/local/sbin/ares-sbx-runner",
+        "echo hello",
+    ]
+    assert len(captured["argv"]) == 6
+    assert captured["argv"][-1] == "echo hello"
+    assert captured["kwargs"].get("env") is None
+    assert captured["kwargs"].get("cwd") is None
+    assert "shell" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_prod_shell_metacharacters_single_argv_element(monkeypatch):
+    """Test that shell metacharacters are passed as single argv element."""
+    monkeypatch.setenv("ARES_ENV", "prod")
+    monkeypatch.setattr("ares.plugins.tools.shell_tools.getpass.getuser", lambda: "ares")
+
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+
+        class _P:
+            returncode = 0
+            pid = 12345
+
+            async def communicate(self):
+                return (b"ok-output", None)
+
+        return _P()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    sh = RunShell("ares-sbx", "/home/ares-sbx")
+
+    dangerous_commands = [
+        "; rm -rf /",
+        "$(cat /etc/passwd)",
+        "`id`",
+        "a && b | c > /tmp/x",
+    ]
+
+    for cmd in dangerous_commands:
+        captured.clear()
+        res = await sh.run(None, command=cmd)
+        assert res.ok is True
+        assert list(captured["argv"])[-1] == cmd
+        assert len(captured["argv"]) == 6
+        assert captured["argv"][4] == "/usr/local/sbin/ares-sbx-runner"
+
+
+def test_sbx_runner_syntax_and_lint():
+    """Test sbx-runner script syntax and lint."""
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    sbx_runner_path = repo_root / "deploy" / "sbx-runner"
+
+    assert sbx_runner_path.exists(), f"sbx-runner not found at {sbx_runner_path}"
+
+    # Check syntax with sh -n
+    result = subprocess.run(
+        ["sh", "-n", str(sbx_runner_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"sbx-runner syntax error: {result.stderr}"
+
+    # Check with shellcheck if available
+    if shutil.which("shellcheck"):
+        result = subprocess.run(
+            ["shellcheck", str(sbx_runner_path)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"sbx-runner shellcheck errors: {result.stderr}"
+    else:
+        pytest.skip("shellcheck not installed")

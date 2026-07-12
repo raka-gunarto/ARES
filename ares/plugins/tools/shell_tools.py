@@ -12,6 +12,12 @@ logger = get_logger(__name__)
 
 MAX_OUTPUT_CHARS = 4000
 
+# The sole sudo entry point from the `ares` daemon to the `ares-sbx` sandbox
+# user (spec §15). Installed OUTSIDE the app tree by provision.sh so it is not
+# part of the self-edit surface; the runner scrubs the environment (env -i) and
+# sets cwd, so the daemon passes neither through.
+RUNNER_PATH = "/usr/local/sbin/ares-sbx-runner"
+
 DEV_WARNING = (
     "[warning: sandbox_user not configured; running as the daemon user — DEV ONLY]\n"
 )
@@ -80,27 +86,34 @@ class RunShell(BaseTool):
                 False, "error: shell execution refused (no sandbox user separation in prod)"
             )
 
-        # Restricted env — never the ARES secret env (§14.3/§15).
-        env = {
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "HOME": self.workdir or "/tmp",
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-        }
-
         warning = ""
         if self.sandbox_user:
-            argv = ["sudo", "-n", "-u", self.sandbox_user, "/bin/bash", "-lc", command]
+            # prod (§15): the sole sudo entry point is ares-sbx-runner, which
+            # scrubs the environment (env -i) and sets cwd itself. Pass the
+            # command as ONE argv element (never a daemon-side shell string),
+            # and pass NEITHER env NOR cwd — the runner is the guarantee.
+            argv = ["sudo", "-n", "-u", self.sandbox_user, RUNNER_PATH, command]
+            run_env = None
+            run_cwd = None
         else:
+            # dev (sandbox_user=""): run directly with a restricted env (never
+            # the ARES secret env, §14.3/§15) and a loud warning.
             argv = ["/bin/bash", "-lc", command]
             warning = DEV_WARNING
+            run_env = {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": self.workdir or "/tmp",
+                "LANG": os.environ.get("LANG", "C.UTF-8"),
+            }
+            run_cwd = self.workdir or None
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                cwd=(self.workdir or None),
-                env=env,
+                cwd=run_cwd,
+                env=run_env,
                 start_new_session=True,
             )
         except (FileNotFoundError, PermissionError, OSError) as e:
