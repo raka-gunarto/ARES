@@ -326,6 +326,9 @@ class HomeAssistantSource(BaseSource):
                         await self._subscribe(ws)
                         await self._receive_loop(ws)
                 delay = 2  # reset after a cleanly-established+run connection
+            except websockets.exceptions.ConnectionClosed:
+                # A dropped HA connection is routine; reconnect quietly (no traceback).
+                log.info("home_assistant: WS connection closed; reconnecting")
             except Exception:
                 log.exception("home_assistant: WS connection error")
 

@@ -6,20 +6,22 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-*** v1.2 BUMP IN PROGRESS — M0–M13 all complete; retrofitting two authorised changes. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump. ***
 
-Two v1.2 changes, both explicitly authorised to touch already-completed modules:
- 1. HA live WebSocket (resolves the M6 Blocker): add a `home_assistant` extra
-    (`websockets`, guarded import), implement the WS connect/auth/subscribe/backoff loop
-    in HomeAssistantSource.start(), feeding the EXISTING filter methods. §12 + §7.3.
- 2. PATCH-1 prompt hardening (spec v1.1 -> v1.2): a fixed, non-config-overridable RULES
-    block carrying injection defenses (§4.11 / ARES-SYSTEM-PROMPT.md), and non-user event
-    fencing as [EVENT ...] in agent.py step 4 (§4.10) so external content can't pose as a
-    user turn. Authorised files: prompt.py, agent.py, instance/config.yaml, their tests,
-    plus the docs (spec, CLAUDE.md, PROGRESS.md, ARES-SYSTEM-PROMPT.md).
+v1.2 bump done (both authorised changes landed, M2/M6 history intact):
+ 1. HA live WebSocket — RESOLVES the M6 Blocker. `home_assistant` extra (`websockets`,
+    guarded import); HomeAssistantSource.start() runs the real transport (auth ->
+    subscribe state_changed+ares_event -> dispatch into the existing filter methods ->
+    reconnect backoff 2->60s). Acceptance PASSED against a REAL local WS server:
+    auth_ok, both subscriptions received, a pushed state_changed flowed through the filter
+    to an emitted HIGH state_change event, and the source reconnected after a forced drop.
+ 2. PATCH-1 prompt hardening (spec -> v1.2) — fixed, non-config-overridable RULES block
+    (§4.11 / ARES-SYSTEM-PROMPT.md), byte-identical across prompt.py/spec/doc; non-user
+    events fenced as [EVENT ...] (§4.10). Acceptance: #1 suite green, #2 prompt order, #4
+    regression pass; #3 injection test structural-only (no live LLM — see Decisions,
+    reported honestly, operator must run the by-hand heating test on a live model).
 
-M2/M6 history stays intact — new ticklist sections appended below, nothing un-ticked.
-After the bump, restore this to the completed state.
+Full suite: 208 passed. main.py still 400/400 (v1.2 added no main.py wiring).
 
 --- prior completion state (M0–M13, retained) ---
 M13 done, acceptance passed — real local-git origin drove the updater end-to-end: poll
@@ -209,7 +211,7 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] pyproject.toml — `home_assistant = ["websockets"]` extra
 - [x] ares/plugins/sources/home_assistant.py — WS connect/auth/subscribe(state_changed)/reconnect backoff (2->60s) in start(), guarded `websockets` import; feeds existing process_state_changed/process_ares_event
 - [x] tests/test_ha_ws.py — WS auth handshake + subscribe + message dispatch (mock websockets)
-- [ ] v1.2 HA WebSocket acceptance (auth, subscribe, a state_changed message flows through the filter to an emitted event; reconnect on drop)
+- [x] v1.2 HA WebSocket acceptance (auth, subscribe, a state_changed message flows through the filter to an emitted event; reconnect on drop)
 
 ### PATCH-1 — Prompt hardening (spec v1.2)  (retrofit into completed M2)
 - [x] ARES-SPEC.md updated to v1.2 (§4.11 RULES block, §4.10 event fencing)
