@@ -214,7 +214,7 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 ### PATCH-1 — Prompt hardening (spec v1.2)  (retrofit into completed M2)
 - [x] ARES-SPEC.md updated to v1.2 (§4.11 RULES block, §4.10 event fencing)
 - [x] ARES-SYSTEM-PROMPT.md created
-- [ ] ares/core/prompt.py — RULES constant, fixed, not config-overridable
+- [x] ares/core/prompt.py — RULES constant, fixed, not config-overridable
 - [ ] ares/core/agent.py — non-user events fenced as [EVENT ...]
 - [ ] instance/config.yaml — persona contains persona text only
 - [ ] tests/test_prompt.py
