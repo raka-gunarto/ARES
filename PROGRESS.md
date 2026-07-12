@@ -6,14 +6,17 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M11 (M10 complete, acceptance passed — all security invariants held: broker
-stdlib-only/no-ares-import, shell refuses own-uid in prod + secret isolation, ARES files
-but never approves privilege requests, broker runs only approved+allowlisted). Open items
-carried forward: M6 live-HA-WS Blocker; live voice/SIP need hardware/PJSIP. NOTE: main.py is
-now 390 lines (cap 400) — M11/M12 wiring may need care. Next action: begin M11 (Web
-dashboard) — read spec §17 FIRST. Dep: `dashboard` extra (fastapi, uvicorn — INSTALLED via
-.[dev]? no — need to check/install `.[dashboard]`). Token auth, polling (no websockets),
-memory RO with path safety, approve/deny flips DB (dashboard is where approve/deny live).
+Milestone: M12 (M11 complete, acceptance passed — real HTTP e2e: token auth 401/200, chat
+round-trips POST->agent->speak->WebChannel->long-poll, memory RO + path-escape rejected,
+tasks render, pending priv Approve flips DB, health returns queue depths; suite 175 green).
+Open items carried forward: M6 live-HA-WS Blocker; live voice/SIP need hardware/PJSIP.
+NOTE: instance/main.py is now 398 lines (cap 400) — M12 wiring MUST reclaim lines before
+adding much (selfedit tools registration + prs cache/provider). Next action: begin M12
+(Self-edit -> PR) — READ spec §18 FIRST, and §14 security model. Hard rules: open_pr commits
+to the SCRATCH clone ONLY, never writes /opt/ares (or dev stand-in live_code_path); ARES can
+NEVER merge its own PRs (human GitHub gate + branch protection); path-escape in `files`
+rejected; open PRs surface in /api/prs (wire the real prs_provider into DashboardSource,
+replacing the current `lambda: []`).
 
 ## Ticklist
 
@@ -157,7 +160,7 @@ memory RO with path safety, approve/deny flips DB (dashboard is where approve/de
 - [x] ares/plugins/dashboard/static/index.html  (single-file vanilla JS UI)
 - [x] instance/main.py updated (register dashboard source + WebChannel)
 - [x] tests/test_dashboard.py  (token auth required, memory path safety, approve flips DB)
-- [ ] M11 acceptance test passed (chat round-trip, approvals, RO memory)
+- [x] M11 acceptance test passed (chat round-trip, approvals, RO memory)
 
 ### M12 — Self-edit -> PR  (read spec §18 first)
 - [ ] ares/plugins/tools/selfedit_tools.py  (open_pr, get_pr_status; scratch repo ONLY)
@@ -236,6 +239,16 @@ memory RO with path safety, approve/deny flips DB (dashboard is where approve/de
   fully implementable/testable at the spec-mandated level. SIPService gained a
   `user_uris: dict[str,str]` field + `has_active_call()`/`speak_into_call()` helpers
   (spec §7.5 shows the core methods; these are the minimal glue the channels/tools need).
+- 2026-07-12 (M11): the dashboard config key is `password` (`!secret DASHBOARD_PASSWORD`,
+  per config.yaml + spec §17: "single shared password ... sent as a bearer token").
+  `DashboardSource` reads `config["password"]` and uses it verbatim as the bearer token;
+  `api.build_app(token=...)` compares with `hmac.compare_digest`. No separate `token` key.
+- 2026-07-12 (M11): `DashboardSource.start()` BLOCKS on `uvicorn.Server.serve()` (not a
+  fire-and-forget task) so the §4.2 supervisor supervises it directly — a uvicorn crash
+  propagates to `supervise()` for restart; `stop()` sets `should_exit` so serve() returns
+  and supervision ends cleanly. Matches the scheduler/sip `while not _stopping` convention.
+- 2026-07-12 (M11): trimmed a 3-line comment in main.py to keep it at 398/400 after adding
+  dashboard wiring. M12 wiring will need further reclamation or the wiring must move.
 
 ## Blockers
 
