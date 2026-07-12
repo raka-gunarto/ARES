@@ -6,17 +6,21 @@ deployment/security layer is M10–M13; read spec §14 before touching any of it
 
 ## Current
 
-Milestone: M12 (M11 complete, acceptance passed — real HTTP e2e: token auth 401/200, chat
-round-trips POST->agent->speak->WebChannel->long-poll, memory RO + path-escape rejected,
-tasks render, pending priv Approve flips DB, health returns queue depths; suite 175 green).
-Open items carried forward: M6 live-HA-WS Blocker; live voice/SIP need hardware/PJSIP.
-NOTE: instance/main.py is now 398 lines (cap 400) — M12 wiring MUST reclaim lines before
-adding much (selfedit tools registration + prs cache/provider). Next action: begin M12
-(Self-edit -> PR) — READ spec §18 FIRST, and §14 security model. Hard rules: open_pr commits
-to the SCRATCH clone ONLY, never writes /opt/ares (or dev stand-in live_code_path); ARES can
-NEVER merge its own PRs (human GitHub gate + branch protection); path-escape in `files`
-rejected; open PRs surface in /api/prs (wire the real prs_provider into DashboardSource,
-replacing the current `lambda: []`).
+Milestone: M13 (M12 complete, acceptance passed — real local-git origin: open_pr branches +
+commits into scratch clone only + pushes, live_code_path never written, path-escape rejected,
+get_pr_status reads state, opened PR shows in dashboard /api/prs over real HTTP (token-gated),
+and structurally ARES has no merge tool/route; suite 180 green). Open items carried forward:
+M6 live-HA-WS Blocker; live voice/SIP need hardware/PJSIP. NOTE: instance/main.py is at
+400/400 lines — M13 barely touches it (tripwires live in config.py/secrets.py/shell_tools.py),
+but any main.py addition MUST reclaim first. Next action: begin M13 (Update listener + deploy
+artifacts + prod tripwires) — READ spec §19 (done) and §14 FIRST. HARD security rules:
+updater/aresupdater.py is STDLIB-ONLY and must NEVER import `ares` (test asserts this, like
+the broker); webhook verifies X-Hub-Signature-256 HMAC vs ARES_WEBHOOK_SECRET; poll fallback
+via git ls-remote; safe swap = temp worktree + smoke-import + ABORT-on-failure (never swap a
+broken tree), serialised with a lock; restart via sudo systemctl (fixed argv). Prod tripwires:
+prod fails fast on a readable .env (secrets must come from os.environ) and on missing sandbox
+user separation (shell/selfedit refuse own-uid — already partly done). Do NOT weaken prod
+tripwires to pass a test; fix the test setup.
 
 ## Ticklist
 
@@ -166,7 +170,7 @@ replacing the current `lambda: []`).
 - [x] ares/plugins/tools/selfedit_tools.py  (open_pr, get_pr_status; scratch repo ONLY)
 - [x] instance/main.py updated (register selfedit tools)
 - [x] tests/test_selfedit.py  (path escape in files rejected, never writes live code path)
-- [ ] M12 acceptance test passed (PR opened against test repo, cannot merge, status read)
+- [x] M12 acceptance test passed (PR opened against test repo, cannot merge, status read)
 
 ### M13 — Update listener + deploy artifacts  (read spec §14, §19 first)
 - [ ] updater/aresupdater.py  (STDLIB ONLY, no ares import; webhook HMAC + poll + safe swap)
@@ -249,6 +253,20 @@ replacing the current `lambda: []`).
   and supervision ends cleanly. Matches the scheduler/sip `while not _stopping` convention.
 - 2026-07-12 (M11): trimmed a 3-line comment in main.py to keep it at 398/400 after adding
   dashboard wiring. M12 wiring will need further reclamation or the wiring must move.
+- 2026-07-12 (M12): no real GitHub/token reachable here, so the M12 acceptance (and
+  test_selfedit) exercise the git half against a LOCAL bare repo used as `origin` (proving
+  branch/commit-into-scratch-only/push + live-never-written + path-escape rejection), and
+  mock ONLY the GitHub REST seams `OpenPR._create_pr` / `GetPRStatus._fetch`. This is the
+  §10-mandated level here; live PR creation needs a real repo + fine-grained PAT + branch
+  protection (operator, per DEPLOYMENT.md). "ARES cannot merge" is verified structurally
+  (no merge tool, no /merge route) — branch protection is the real external gate.
+- 2026-07-12 (M12): hardened selfedit `_run_git` to scrub the GitHub token from all git
+  output before it is returned in a ToolResult/log (a failed clone/fetch/push can otherwise
+  echo the token-embedded `x-access-token:TOKEN@github.com` origin URL). Not explicit in the
+  spec but required by the secret-handling rules (§14 / CLAUDE.md).
+- 2026-07-12 (M12): trimmed 5 self-evident inline comments in main.py so the selfedit +
+  prs_provider wiring keeps it at exactly 400/400 (spec §0.10 hard cap). `DashboardSource`
+  gained a trailing optional `prs_provider` param (defaults to `lambda: []`).
 
 ## Blockers
 
