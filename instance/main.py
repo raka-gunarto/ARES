@@ -63,7 +63,7 @@ import sys
 from pathlib import Path
 
 from ares.core.agent import Agent
-from ares.core.config import load_config
+from ares.core.config import enforce_prod_tripwires, load_config
 from ares.core.critical import CriticalHandlerRegistry
 from ares.core.dispatcher import Dispatcher
 from ares.core.event import Event, EventBus, Priority
@@ -164,6 +164,7 @@ async def main(config_path: str) -> None:
         env_path = Path("instance/.env.example")
     secrets = EnvSecretStore(env_path)
     config = load_config(Path(config_path), secrets)
+    enforce_prod_tripwires(config, secret_file=env_path)
 
     setup_logging()
 
@@ -263,7 +264,6 @@ async def main(config_path: str) -> None:
 
     voice_config = config.plugins.get("voice", {})
     if voice_config.get("enabled"):
-        # Build shared voice pipeline components (raises RuntimeError if voice extra absent)
         vad = SileroVAD()
         stt = WhisperSTT(model_size=voice_config.get("whisper_model", "small"))
         intent = IntentFilter(

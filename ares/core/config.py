@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import getpass
+import os
 from pathlib import Path
 
 import yaml
@@ -10,6 +12,14 @@ from ares.core.secrets import BaseSecretStore, SecretNotFound
 
 class ConfigError(Exception):
     """Raised when source configuration is invalid."""
+
+    pass
+
+
+class ProdTripwire(Exception):
+    """Raised at startup when ARES_ENV=prod but the security separation the
+    whole model depends on is absent (§14.4). Fatal by design: a misconfigured
+    VM that silently runs everything as one user must fail loudly, not boot."""
 
     pass
 
@@ -114,3 +124,40 @@ def load_config(path: Path, secrets: BaseSecretStore) -> Config:
         raw = yaml.load(f, Loader=_SecretLoader)
 
     return Config(**raw)
+
+
+def enforce_prod_tripwires(config: Config, *, secret_file: Path | None = None) -> None:
+    """Fail fast in prod when the user/secret separation is missing (§14.4).
+
+    No-op in dev. In prod, raises :class:`ProdTripwire` (fatal at startup) if
+    the secret file is readable by the daemon user (secrets must arrive via
+    ``os.environ``, the ``.env`` being ``0600 root:root``), or if a
+    privilege-dropping plugin (``shell``/``selfedit``) is enabled without a
+    distinct ``sandbox_user`` to drop to. These are the exact silent-collapse
+    conditions §14.4 says must become a loud error rather than a running VM.
+    """
+    if os.environ.get("ARES_ENV", "dev") != "prod":
+        return
+
+    problems: list[str] = []
+    if secret_file is not None and os.access(secret_file, os.R_OK):
+        problems.append(
+            f"secret file '{secret_file}' is readable by the daemon user "
+            "(prod requires 0600 root:root; secrets come from the environment)"
+        )
+
+    me = getpass.getuser()
+    for name in ("shell", "selfedit"):
+        plugin = config.plugins.get(name, {})
+        if plugin.get("enabled"):
+            sandbox_user = plugin.get("sandbox_user", "")
+            if not sandbox_user or sandbox_user == me:
+                problems.append(
+                    f"{name}: sandbox_user missing or equals the daemon user "
+                    f"'{me}' — no privilege separation"
+                )
+
+    if problems:
+        raise ProdTripwire(
+            "refusing to start in prod:\n  - " + "\n  - ".join(problems)
+        )

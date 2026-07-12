@@ -43,11 +43,16 @@ class EnvSecretStore(BaseSecretStore):
         """Initialize the environment secret store.
 
         Args:
-            dotenv_path: Optional path to a .env file to load. If provided,
-                values from this file are loaded first.
+            dotenv_path: Optional path to a .env file to load (dev only). In
+                prod the dotenv fallback is disabled entirely: secrets must
+                come from ``os.environ`` (systemd ``EnvironmentFile=`` injects
+                them as root before dropping to the ``ares`` user), and the
+                ``.env`` file is ``0600 root:root`` — unreadable to the daemon
+                (§14.2). Loading a dotenv in prod would defeat that isolation.
         """
         self._values: dict[str, str] = {}
-        if dotenv_path:
+        env_mode = os.environ.get("ARES_ENV", "dev")
+        if dotenv_path and env_mode != "prod":
             self._values = dotenv_values(dotenv_path)
 
     def get(self, key: str) -> str:
