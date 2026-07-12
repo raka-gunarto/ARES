@@ -1,0 +1,13 @@
+{
+  "repo": "youruser/ares",
+  "app_dir": "/opt/ares/app",
+  "branch": "main",
+  "webhook_port": 8790,
+  "webhook_secret_env": "ARES_WEBHOOK_SECRET",
+  "poll_seconds": 300,
+  "restart_cmd": ["sudo", "-n", "systemctl", "restart", "ares"],
+  "src_dir": "/opt/ares/src",
+  "releases_dir": "/opt/ares/releases",
+  "venv_python": "/opt/ares/venv/bin/python",
+  "released_sha_file": "/opt/ares/RELEASED_SHA"
+}

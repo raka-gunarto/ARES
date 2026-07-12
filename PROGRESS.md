@@ -173,7 +173,7 @@ tripwires to pass a test; fix the test setup.
 - [x] M12 acceptance test passed (PR opened against test repo, cannot merge, status read)
 
 ### M13 — Update listener + deploy artifacts  (read spec §14, §19 first)
-- [ ] updater/aresupdater.py  (STDLIB ONLY, no ares import; webhook HMAC + poll + safe swap)
+- [x] updater/aresupdater.py  (STDLIB ONLY, no ares import; webhook HMAC + poll + safe swap)
 - [ ] deploy/provision.sh  (users, dirs, perms, sudoers, unit install; passes shellcheck + bash -n)
 - [ ] deploy/ares.service
 - [ ] deploy/ares-broker.service
