@@ -156,7 +156,7 @@ memory RO with path safety, approve/deny flips DB (dashboard is where approve/de
 - [x] ares/plugins/dashboard/server.py  (DashboardSource, uvicorn in-loop)
 - [x] ares/plugins/dashboard/static/index.html  (single-file vanilla JS UI)
 - [x] instance/main.py updated (register dashboard source + WebChannel)
-- [ ] tests/test_dashboard.py  (token auth required, memory path safety, approve flips DB)
+- [x] tests/test_dashboard.py  (token auth required, memory path safety, approve flips DB)
 - [ ] M11 acceptance test passed (chat round-trip, approvals, RO memory)
 
 ### M12 — Self-edit -> PR  (read spec §18 first)
