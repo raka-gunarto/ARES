@@ -349,9 +349,15 @@ class HomeAssistantSource(BaseSource):
             try:
                 async with websockets.connect(self._ws_url) as ws:
                     if await self._authenticate(ws):
+                        delay = 2  # reset ONLY after a successful auth
                         await self._subscribe(ws)
                         await self._receive_loop(ws)
-                delay = 2  # reset after a cleanly-established+run connection
+                    else:
+                        # Bad token/creds: do NOT hammer HA every 2s — back off.
+                        log.error(
+                            "home_assistant: authentication rejected; backing off %ss "
+                            "(check HA_TOKEN)", delay
+                        )
             except websockets.exceptions.ConnectionClosed:
                 # A dropped HA connection is routine; reconnect quietly (no traceback).
                 log.info("home_assistant: WS connection closed; reconnecting")
