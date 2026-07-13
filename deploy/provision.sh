@@ -49,19 +49,35 @@ chown -R ares-deploy:ares /opt/ares
 chmod 0750 /opt/ares
 [[ -e "${APP_DIR}" ]] && chmod -R g-w "${APP_DIR}"
 
-# /etc/ares: config readable by ares; secrets/broker/updater 0600 root:root.
+# /etc/ares: config readable by ares; true secrets 0600 root:root.
 install -d -o root -g ares -m 0750 "${ETC_DIR}"
 [[ -f "${ETC_DIR}/config.yaml" ]] && chown root:ares "${ETC_DIR}/config.yaml" && chmod 0640 "${ETC_DIR}/config.yaml"
-for secret in .env updater.env broker.json updater.json; do
+# .env / updater.env hold secrets and are read by systemd as root before it drops
+# privilege — keep them unreadable to the service users. broker.json is read by
+# the root broker.
+for secret in .env updater.env broker.json; do
     if [[ -f "${ETC_DIR}/${secret}" ]]; then
         chown root:root "${ETC_DIR}/${secret}"
         chmod 0600 "${ETC_DIR}/${secret}"
     fi
 done
+# updater.json has NO secrets (the secret is in updater.env) but IS read by the
+# ares-deploy service user, so it must be group-readable by ares-deploy.
+if [[ -f "${ETC_DIR}/updater.json" ]]; then
+    chown root:ares-deploy "${ETC_DIR}/updater.json"
+    chmod 0640 "${ETC_DIR}/updater.json"
+fi
 
 # /var/lib/ares: all mutable state, 0700 ares:ares.
 install -d -o ares -g ares -m 0700 "${STATE_DIR}"
 install -d -o ares -g ares -m 0700 "${STATE_DIR}/memory"
+install -d -o ares -g ares -m 0700 "${STATE_DIR}/tasks"
+# Pre-create the privilege queue DB owned by ares so the ROOT broker (which also
+# opens it) can't create it first as root — otherwise the ares daemon can't write
+# its own queue ("readonly database"). Both ares (owner) and root (broker) can use it.
+if [[ ! -e "${STATE_DIR}/privq.db" ]]; then
+    install -o ares -g ares -m 0600 /dev/null "${STATE_DIR}/privq.db"
+fi
 
 # sandbox scratch clone, owned by ares-sbx.
 install -d -o ares-sbx -g ares-sbx -m 0700 "${SBX_HOME}/scratch"
