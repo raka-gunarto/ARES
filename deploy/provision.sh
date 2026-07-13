@@ -49,8 +49,10 @@ chown -R ares-deploy:ares /opt/ares
 chmod 0750 /opt/ares
 [[ -e "${APP_DIR}" ]] && chmod -R g-w "${APP_DIR}"
 
-# /etc/ares: config readable by ares; true secrets 0600 root:root.
-install -d -o root -g ares -m 0750 "${ETC_DIR}"
+# /etc/ares: 0751 so the ares-deploy service user can TRAVERSE in to read
+# updater.json (it's not in the ares group). Directory listing is closed to
+# "other"; each file's own perms gate reads (.env stays 0600 root:root).
+install -d -o root -g ares -m 0751 "${ETC_DIR}"
 [[ -f "${ETC_DIR}/config.yaml" ]] && chown root:ares "${ETC_DIR}/config.yaml" && chmod 0640 "${ETC_DIR}/config.yaml"
 # .env / updater.env hold secrets and are read by systemd as root before it drops
 # privilege — keep them unreadable to the service users. broker.json is read by
