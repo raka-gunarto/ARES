@@ -240,6 +240,17 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] tests/test_shell.py argv-list assertions
 - [x] PATCH-2 acceptance passed (Docker: runner drops to ares-sbx, secret canary scrubbed, ares has no other sudo)
 
+### PATCH-3 — Security-review fixes (post-audit hardening)
+- [x] C1/C2 — self-edit rewritten API-only (GitHub Git-Data API); token never on disk/in sandbox; open_pr refuses base branch + only creates a new branch ref (can't push main)
+- [x] C3 — HAService.control_allowed default-denies lock.unlock/lock.open/alarm_disarm for LLM control_device (operator-overridable); test_ha_control_gate
+- [x] H1/H2 — SECRET_CANARY-never-surfaces + only-request/pending privilege invariants (test_security_invariants)
+- [x] H3 — broker.example package_install ships DENY-ALL
+- [x] M1 — dashboard binds 127.0.0.1
+- [x] M2 — updater webhook body capped (1MiB) before read
+- [x] L1 — updater restart_cmd uses absolute /usr/bin/systemctl
+- [x] prod tripwire no longer requires sandbox_user for selfedit (now API-driven)
+- [x] spec §18/§14/§8 + DEPLOYMENT updated; full suite 220 passed
+
 ## Decisions
 
 - 2026-07-12 (v1.2): PATCH-1 applied — prompt-layer injection defenses retrofitted into
@@ -252,6 +263,18 @@ post-v1 scope (spec §1 out-of-scope list is binding).
   boundary; the change request's trailing "Budget check:" paragraph is implementer guidance
   and is NOT part of RULES (operator confirmed). The block is byte-identical across
   prompt.py, ARES-SPEC.md §4.11, and ARES-SYSTEM-PROMPT.md.
+- 2026-07-13 (PATCH-3): post-audit security fixes. C1/C2 — self-edit moved off local git
+  entirely: `open_pr` now uses the GitHub Git-Data API from the daemon (blobs/tree/commit/ref
+  + PR), so the token stays in the Authorization header (never on disk, never reaches the
+  ares-sbx shell → fixes "ARES can read its own token"), and it refuses `branch == base` and
+  only ever writes a NEW branch ref → can't push `main`. This ALSO retires the selfedit/PATCH-2
+  sudoers inconsistency (no sandbox exec at all), so selfedit dropped from the prod sandbox_user
+  tripwire. C3 — outbound HA control gate (default-deny doors/alarm-disarm) at HAService, since
+  the inbound event allow-list never constrained call_service. H3/M1/M2/L1 — deny-all package
+  allowlist default, dashboard loopback bind, webhook body cap, absolute systemctl path.
+  H1/H2 — invariant tests (env canary never in tool output; only request/pending priv path).
+  M3 from the audit was NOT actioned: verified the bus logs only event metadata (not payloads)
+  and LLMClient never logs the api_key/headers, so there is no current leak to fix.
 - 2026-07-12 (PATCH-2): sbx-runner was referenced in DEPLOYMENT but never specced; defined it
   and moved it to /usr/local/sbin (outside the app tree) so it is not in the self-edit surface.
   The runner is the sole sudo entry point ares -> ares-sbx and scrubs the env (env -i).
