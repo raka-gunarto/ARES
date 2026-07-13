@@ -111,6 +111,13 @@ class LLMClient:
                 # Success case (2xx)
                 if 200 <= response.status_code < 300:
                     data = response.json()
+                    # OpenRouter (and some gateways) can return HTTP 200 with an
+                    # {"error": ...} body and no choices — handle it instead of
+                    # crashing with KeyError.
+                    if not data.get("choices"):
+                        raise LLMError(
+                            f"LLM returned no choices: {data.get('error', data)}"
+                        )
                     message = data["choices"][0]["message"]
                     log.debug(f"LLM response: {message}")
                     return message
