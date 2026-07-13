@@ -37,6 +37,10 @@ import time
 
 DEFAULT_CONFIG_PATH = "/etc/ares/updater.json"
 LOG_PATH = "/var/log/ares-updater.log"
+# Cap the webhook body BEFORE reading it: the endpoint is internet-exposed via
+# the tunnel and the HMAC can only be checked after the body is read, so an
+# unauthenticated caller must not be able to force an unbounded read.
+MAX_WEBHOOK_BODY = 1_048_576  # 1 MiB — GitHub push payloads are far smaller
 
 log = logging.getLogger("aresupdater")
 
@@ -280,6 +284,10 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
             self._reject(400)
+            return
+        if length < 0 or length > MAX_WEBHOOK_BODY:
+            log.warning("webhook: rejecting oversized/invalid body (length=%s)", length)
+            self._reject(413)
             return
         body = self.rfile.read(length) if length > 0 else b""
 

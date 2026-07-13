@@ -1,8 +1,9 @@
 {
   "db_path": "/var/lib/ares/privq.db",
   "poll_seconds": 5,
+  "_comment": "DEFAULT DENY-ALL. package_install ships EMPTY: the operator opts in per package with an exact regex, e.g. [\"^htop$\",\"^tmux$\"]. Never widen to a catch-all like ^[a-z0-9...]+$ — the deterministic allowlist is the strong gate that holds even if a persuasive/injected reason fools the approver.",
   "allow": {
-    "package_install": ["^[a-z0-9][a-z0-9+.\\-]*$"],
+    "package_install": [],
     "service_action": ["^(restart|status) (ares|ares-updater)$"],
     "command": []
   }
