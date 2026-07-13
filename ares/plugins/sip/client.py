@@ -1,10 +1,33 @@
-"""SIP service wrapper around pjsua2."""
+"""SIP service — real pjsua2 wrapper (spec §7.5).
+
+Wraps pjsua2 for account registration, pager-mode SIP MESSAGE, and calls with
+speech. Per §7.5 all audio bridging uses PJSIP WAV player/recorder ports against
+temp files (Piper for TTS, Whisper for STT) — never live sample streaming.
+
+Threading: pjsua2 is callback/thread based. All pjsua2 *commands* are issued on a
+single dedicated worker thread (a max-1 executor, registered with the endpoint);
+pjsua2 fires *callbacks* on its own worker thread. Callbacks that need to reach
+the asyncio world hand a plain `(from_uri[, text])` tuple to the source-provided
+callbacks, which marshal onto the loop with `run_coroutine_threadsafe`.
+
+The `pjsua2` and `faster_whisper` imports are guarded so this module imports
+without the `sip`/`voice` extras (spec §10 import-level test); the real code only
+runs when the extras are present.
+"""
 from __future__ import annotations
 
-import logging
+import asyncio
+import concurrent.futures
+import contextlib
+import tempfile
+import threading
+import time
+import wave
+from pathlib import Path
 from typing import Callable
 
-# Guarded import: pjsua2 requires system PJSIP build, not in core dependencies
+from ares.core.utils.logging import get_logger
+
 try:
     import pjsua2 as pj
 
@@ -12,11 +35,79 @@ try:
 except ImportError:
     _HAVE_PJSUA2 = False
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+# pjsua2 subclasses can only be defined when pjsua2 is importable.
+if _HAVE_PJSUA2:
+
+    class _Call(pj.Call):
+        """One pjsua2 call. Signals media-ready and disconnect via Events."""
+
+        def __init__(self, acc, service, call_id=pj.PJSUA_INVALID_ID):
+            pj.Call.__init__(self, acc, call_id)
+            self._service = service
+            self.media_ready = threading.Event()
+            self.disconnected = threading.Event()
+
+        def onCallState(self, prm):  # noqa: N802 (pjsua2 API)
+            try:
+                info = self.getInfo()
+                if info.state == pj.PJSIP_INV_STATE_DISCONNECTED:
+                    self.disconnected.set()
+                    self.media_ready.set()  # unblock any waiter
+                    self._service._on_call_ended(self)
+            except Exception:
+                logger.exception("sip: onCallState error")
+
+        def onCallMediaState(self, prm):  # noqa: N802 (pjsua2 API)
+            try:
+                info = self.getInfo()
+                for i, mi in enumerate(info.media):
+                    if (
+                        mi.type == pj.PJMEDIA_TYPE_AUDIO
+                        and mi.status == pj.PJSUA_CALL_MEDIA_ACTIVE
+                    ):
+                        self.media_ready.set()
+                        return
+            except Exception:
+                logger.exception("sip: onCallMediaState error")
+
+        def audio_media(self):
+            """Return the call's active AudioMedia, or None."""
+            info = self.getInfo()
+            for i, mi in enumerate(info.media):
+                if (
+                    mi.type == pj.PJMEDIA_TYPE_AUDIO
+                    and mi.status == pj.PJSUA_CALL_MEDIA_ACTIVE
+                ):
+                    return self.getAudioMedia(i)
+            return None
+
+    class _Account(pj.Account):
+        """Registers callbacks for incoming calls and pager MESSAGEs."""
+
+        def __init__(self, service):
+            pj.Account.__init__(self)
+            self._service = service
+
+        def onRegState(self, prm):  # noqa: N802
+            logger.info("sip: registration status %s", prm.code)
+
+        def onIncomingCall(self, prm):  # noqa: N802
+            self._service._handle_incoming_call(prm.callId)
+
+        def onInstantMessage(self, prm):  # noqa: N802
+            try:
+                cb = self._service._on_message
+                if cb is not None:
+                    cb(prm.fromUri, prm.msgBody)
+            except Exception:
+                logger.exception("sip: onInstantMessage error")
 
 
 class SIPService:
-    """Wraps pjsua2 for account registration and call/message handling."""
+    """Real pjsua2 SIP service (registered in services["sip"])."""
 
     def __init__(
         self,
@@ -25,19 +116,26 @@ class SIPService:
         password: str,
         user_uris: dict[str, str],
         greeting: str = "",
+        piper_model: str = "",
+        whisper_model: str = "small",
+        record_seconds: int = 8,
+        port: int = 0,
     ) -> None:
-        """
-        Initialize SIP service.
+        """Initialize the SIP service.
 
         Args:
-            server: SIP server address (e.g., 'asterisk.local').
-            username: SIP username for registration.
-            password: SIP password for authentication.
-            user_uris: Mapping of user_id to SIP URIs (e.g., {"primary": "sip:alice@server"}).
-            greeting: Text to play when answering incoming calls.
+            server: SIP server host (the Asterisk/registrar).
+            username / password: registration credentials.
+            user_uris: user_id -> SIP URI (who ARES may call / accept calls from).
+            greeting: spoken when answering an incoming call.
+            piper_model: path to a Piper `.onnx` voice (TTS). Empty disables TTS.
+            whisper_model: faster-whisper model size for call STT.
+            record_seconds: per-utterance record window for in-call STT (§7.5
+                allows a configured timeout in place of live VAD endpointing).
+            port: local SIP UDP port (0 = any).
 
         Raises:
-            RuntimeError: If pjsua2 is not installed.
+            RuntimeError: if the `sip` extra (pjsua2) is not installed.
         """
         if not _HAVE_PJSUA2:
             raise RuntimeError(
@@ -49,166 +147,282 @@ class SIPService:
         self.password = password
         self.user_uris = user_uris
         self.greeting = greeting
+        self.piper_model = piper_model
+        self.whisper_model = whisper_model
+        self.record_seconds = record_seconds
+        self.port = port
+
+        self._on_call: Callable[[str], None] | None = None
+        self._on_message: Callable[[str, str], None] | None = None
+
+        self._ep = None
+        self._acc = None
         self._active_call = None
-        self._on_call = None
-        self._on_message = None
-        self._endpoint = None
-        self._account = None
+        self._stt = None  # lazily-built WhisperSTT
+        # All pjsua2 commands run on this single registered thread.
+        self._exec = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="pjsua2"
+        )
+        self._thread_registered = False
+
+    # ---- pjsua2 thread plumbing ---------------------------------------------
+
+    def _register_thread(self) -> None:
+        if self._ep is not None and not self._thread_registered:
+            with contextlib.suppress(Exception):
+                self._ep.libRegisterThread("ares-pjsua2-exec")
+            self._thread_registered = True
+
+    async def _in_pjsua2(self, fn, *args):
+        """Run a blocking pjsua2 op on the dedicated (registered) thread."""
+        loop = asyncio.get_running_loop()
+
+        def _wrapped():
+            self._register_thread()
+            return fn(*args)
+
+        return await loop.run_in_executor(self._exec, _wrapped)
+
+    # ---- registration -------------------------------------------------------
 
     async def register(self) -> None:
-        """
-        Register account to SIP server.
+        """Create the endpoint (null audio device — headless) and register."""
+        await self._in_pjsua2(self._register_blocking)
 
-        Creates a pjsua2 Endpoint and Account, then registers to the configured
-        server. This method is only reachable when pjsua2 is present.
+    def _register_blocking(self) -> None:
+        ep = pj.Endpoint()
+        ep.libCreate()
+        ep_cfg = pj.EpConfig()
+        ep_cfg.uaConfig.threadCnt = 1
+        ep_cfg.logConfig.level = 3
+        ep.libInit(ep_cfg)
+        tcfg = pj.TransportConfig()
+        tcfg.port = self.port
+        ep.transportCreate(pj.PJSIP_TRANSPORT_UDP, tcfg)
+        ep.libStart()
+        # WAV player/recorder ports only — never touch a real sound card.
+        ep.audDevManager().setNullDev()
+        self._ep = ep
 
-        Note: pjsua2 is callback/thread based. Callbacks marshal onto the
-        asyncio loop via asyncio.run_coroutine_threadsafe (spec §7.5).
-        """
-        if not _HAVE_PJSUA2:
-            logger.warning("pjsua2 not installed, register is a no-op")
-            return
+        acc_cfg = pj.AccountConfig()
+        acc_cfg.idUri = f"sip:{self.username}@{self.server}"
+        acc_cfg.regConfig.registrarUri = f"sip:{self.server}"
+        acc_cfg.sipConfig.authCreds.append(
+            pj.AuthCredInfo("digest", "*", self.username, 0, self.password)
+        )
+        acc = _Account(self)
+        acc.create(acc_cfg)
+        self._acc = acc
+        logger.info("sip: endpoint up, registering %s@%s", self.username, self.server)
 
-        try:
-            # In a real implementation with pjsua2 installed:
-            # - Create Endpoint and configure
-            # - Create Account with server/username/password
-            # - Register and attach callbacks
-            logger.info(f"Registering SIP account {self.username}@{self.server}")
-        except Exception as e:
-            logger.error(f"Failed to register SIP account: {e}")
+    # ---- outbound MESSAGE ---------------------------------------------------
 
     async def send_message(self, uri: str, text: str) -> bool:
-        """
-        Send a SIP MESSAGE to a URI.
-
-        Args:
-            uri: Destination SIP URI (e.g., 'sip:alice@server').
-            text: Message text to send.
-
-        Returns:
-            True on success, False on failure.
-        """
-        if not _HAVE_PJSUA2:
-            logger.warning("pjsua2 not installed, send_message is a no-op")
+        """Send a pager-mode SIP MESSAGE to `uri`."""
+        try:
+            return await self._in_pjsua2(self._send_message_blocking, uri, text)
+        except Exception:
+            logger.exception("sip: send_message to %s failed", uri)
             return False
 
-        try:
-            # In a real implementation with pjsua2 installed:
-            # - Use Account.sendInstantMessage(to_uri, text)
-            # - Return True on success
-            logger.info(f"Sending SIP MESSAGE to {uri}: {text}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send SIP MESSAGE to {uri}: {e}")
-            return False
+    def _send_message_blocking(self, uri: str, text: str) -> bool:
+        buddy = pj.Buddy()
+        cfg = pj.BuddyConfig()
+        cfg.uri = uri
+        cfg.subscribe = False
+        buddy.create(self._acc, cfg)
+        prm = pj.SendInstantMessageParam()
+        prm.content = text
+        buddy.sendInstantMessage(prm)
+        logger.info("sip: MESSAGE -> %s", uri)
+        return True
 
-    async def call_and_speak(
-        self, uri: str, text: str, listen: bool
-    ) -> None:
-        """
-        Place a call to a URI and play text via Piper WAV.
-
-        Args:
-            uri: Destination SIP URI.
-            text: Text to play (converted to speech by Piper).
-            listen: If True, record audio from the call.
-
-        Note: Audio uses PJSIP WAV player/recorder ports against temp files,
-        not live sample streaming (spec §7.5).
-        """
-        if not _HAVE_PJSUA2:
-            logger.warning("pjsua2 not installed, call_and_speak is a no-op")
-            return
-
-        try:
-            # In a real implementation with pjsua2 installed:
-            # - Place call via Account.makeCall(uri)
-            # - Generate WAV via Piper (from text)
-            # - Attach player port to call media
-            # - If listen=True, attach recorder port to capture audio
-            logger.info(f"Calling {uri} and speaking: {text}")
-        except Exception as e:
-            logger.error(f"Failed to call and speak to {uri}: {e}")
+    # ---- calls --------------------------------------------------------------
 
     def on_incoming_call(self, cb: Callable[[str], None]) -> None:
-        """
-        Register callback for incoming calls.
-
-        Args:
-            cb: Callback(from_uri) invoked when a call arrives.
-
-        Note: pjsua2 calls the callback from a worker thread. The real
-        implementation marshals onto the asyncio loop via
-        asyncio.run_coroutine_threadsafe (spec §7.5).
-        """
+        """Register the source's incoming-call callback (from_uri)."""
         self._on_call = cb
-        logger.debug("Registered incoming call callback")
 
     def on_incoming_message(self, cb: Callable[[str, str], None]) -> None:
-        """
-        Register callback for incoming SIP MESSAGEs.
-
-        Args:
-            cb: Callback(from_uri, text) invoked when a SIP MESSAGE arrives.
-
-        Note: pjsua2 calls the callback from a worker thread. The real
-        implementation marshals onto the asyncio loop via
-        asyncio.run_coroutine_threadsafe (spec §7.5).
-        """
+        """Register the source's incoming-message callback (from_uri, text)."""
         self._on_message = cb
-        logger.debug("Registered incoming message callback")
 
     def has_active_call(self) -> bool:
-        """
-        Check if a call is currently active.
-
-        Returns:
-            True if a call is in progress, False otherwise.
-        """
+        """True if a call is currently up."""
         return self._active_call is not None
 
-    async def speak_into_call(self, text: str) -> bool:
-        """
-        Play text into the active call.
-
-        Args:
-            text: Text to play (converted to speech by Piper).
-
-        Returns:
-            True on success, False if no active call.
-        """
-        if not self.has_active_call():
-            logger.warning("No active call to speak into")
-            return False
-
-        if not _HAVE_PJSUA2:
-            logger.warning("pjsua2 not installed, speak_into_call is a no-op")
-            return False
-
+    def _handle_incoming_call(self, call_id) -> None:
+        """pjsua2 thread: answer the call, mark it active, notify the source."""
         try:
-            # In a real implementation with pjsua2 installed:
-            # - Generate WAV via Piper (from text)
-            # - Attach player port to active call media
-            logger.info(f"Speaking into active call: {text}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to speak into call: {e}")
+            call = _Call(self._acc, self, call_id)
+            info = call.getInfo()
+            from_uri = info.remoteUri
+            allowed = set(self.user_uris.values())
+            if from_uri not in allowed and not any(
+                a in from_uri for a in allowed
+            ):
+                logger.warning("sip: rejecting call from %s", from_uri)
+                prm = pj.CallOpParam()
+                prm.statusCode = pj.PJSIP_SC_DECLINE
+                call.hangup(prm)
+                return
+            prm = pj.CallOpParam()
+            prm.statusCode = pj.PJSIP_SC_OK
+            call.answer(prm)
+            self._active_call = call
+            logger.info("sip: answered call from %s", from_uri)
+            if self._on_call is not None:
+                self._on_call(from_uri)
+        except Exception:
+            logger.exception("sip: error handling incoming call")
+
+    def _on_call_ended(self, call) -> None:
+        """pjsua2 thread: clear the active call when it disconnects."""
+        if call is self._active_call:
+            self._active_call = None
+            logger.info("sip: call ended")
+
+    async def call_and_speak(self, uri: str, text: str, listen: bool) -> None:
+        """Place an outbound call and speak `text` into it (Piper WAV)."""
+        wav = await self._synth(text) if text else None
+        await self._in_pjsua2(self._call_and_speak_blocking, uri, wav)
+
+    def _call_and_speak_blocking(self, uri: str, wav: str | None) -> None:
+        call = _Call(self._acc, self)
+        prm = pj.CallOpParam(True)
+        call.makeCall(uri, prm)
+        self._active_call = call
+        if call.media_ready.wait(timeout=30) and not call.disconnected.is_set():
+            if wav:
+                self._play_wav_blocking(call, wav)
+
+    async def speak_into_call(self, text: str) -> bool:
+        """Speak `text` into the currently-active call."""
+        if not self.has_active_call():
+            logger.warning("sip: no active call to speak into")
             return False
+        wav = await self._synth(text)
+        if not wav:
+            return False
+        try:
+            await self._in_pjsua2(self._play_wav_blocking, self._active_call, wav)
+            return True
+        except Exception:
+            logger.exception("sip: speak_into_call failed")
+            return False
+
+    def _play_wav_blocking(self, call, wav: str) -> None:
+        """Play a WAV into the call's audio media, blocking for its duration."""
+        media = call.audio_media()
+        if media is None:
+            logger.warning("sip: no active audio media to play into")
+            return
+        player = pj.AudioMediaPlayer()
+        player.createPlayer(wav, pj.PJMEDIA_FILE_NO_LOOP)
+        player.startTransmit(media)
+        time.sleep(_wav_duration(wav) + 0.4)
+        with contextlib.suppress(Exception):
+            player.stopTransmit(media)
+
+    # ---- in-call STT --------------------------------------------------------
+
+    async def record_utterance(self) -> str | None:
+        """Record one utterance from the active call and transcribe it (§7.5)."""
+        if not self.has_active_call():
+            return None
+        wav = str(Path(tempfile.mkdtemp()) / "utt.wav")
+        try:
+            ok = await self._in_pjsua2(self._record_blocking, self._active_call, wav)
+            if not ok:
+                return None
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._transcribe, wav
+            )
+        except Exception:
+            logger.exception("sip: record_utterance failed")
+            return None
+        finally:
+            with contextlib.suppress(OSError):
+                Path(wav).unlink()
+
+    def _record_blocking(self, call, wav: str) -> bool:
+        media = call.audio_media()
+        if media is None:
+            return False
+        recorder = pj.AudioMediaRecorder()
+        recorder.createRecorder(wav)
+        media.startTransmit(recorder)
+        time.sleep(self.record_seconds)
+        with contextlib.suppress(Exception):
+            media.stopTransmit(recorder)
+        del recorder  # flush + close the WAV
+        return Path(wav).exists() and Path(wav).stat().st_size > 44
+
+    def _transcribe(self, wav: str) -> str | None:
+        if self._stt is None:
+            from ares.plugins.sources.voice.stt import WhisperSTT
+
+            self._stt = WhisperSTT(model_size=self.whisper_model)
+        text = self._stt.transcribe(wav)
+        text = (text or "").strip()
+        return text or None
+
+    # ---- TTS ----------------------------------------------------------------
+
+    async def _synth(self, text: str) -> str | None:
+        """Piper-synthesize `text` to a temp WAV; None if TTS is unavailable."""
+        if not self.piper_model:
+            logger.warning("sip: no piper_model configured; cannot speak")
+            return None
+        wav = str(Path(tempfile.mkdtemp()) / "tts.wav")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "piper", "--model", self.piper_model, "--output_file", wav,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            logger.error("sip: piper binary not found; cannot speak")
+            return None
+        _, stderr = await proc.communicate(text.encode())
+        if proc.returncode != 0 or not Path(wav).exists():
+            logger.error("sip: piper failed: %s", stderr.decode(errors="replace"))
+            return None
+        return wav
+
+    # ---- teardown -----------------------------------------------------------
 
     async def aclose(self) -> None:
-        """
-        Tear down the SIP endpoint and active calls.
-
-        Note: Graceful cleanup of pjsua2 Endpoint.
-        """
+        """Hang up and destroy the endpoint."""
         try:
-            if _HAVE_PJSUA2 and self._endpoint is not None:
-                # In a real implementation: Endpoint.hangupAllCalls() then
-                # Endpoint.destroy()
-                logger.info("SIP endpoint closed")
-            self._active_call = None
-            self._endpoint = None
-            self._account = None
-        except Exception as e:
-            logger.error(f"Error closing SIP endpoint: {e}")
+            await self._in_pjsua2(self._close_blocking)
+        except Exception:
+            logger.exception("sip: error during aclose")
+        finally:
+            self._exec.shutdown(wait=False)
+
+    def _close_blocking(self) -> None:
+        if self._ep is not None:
+            with contextlib.suppress(Exception):
+                self._ep.hangupAllCalls()
+            with contextlib.suppress(Exception):
+                if self._acc is not None:
+                    self._acc.shutdown()
+            with contextlib.suppress(Exception):
+                self._ep.libDestroy()
+        self._active_call = None
+        self._acc = None
+        self._ep = None
+        logger.info("sip: endpoint closed")
+
+
+def _wav_duration(path: str) -> float:
+    """Duration of a WAV file in seconds (0.0 on error)."""
+    try:
+        with wave.open(path, "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate() or 1
+            return frames / float(rate)
+    except Exception:
+        return 0.0

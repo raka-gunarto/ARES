@@ -141,7 +141,9 @@ class SIPSource(BaseSource):
         try:
             greeting = self.config.get("greeting", "")
             if greeting:
-                await self.service.call_and_speak(from_uri, greeting, listen=False)
+                # The call is already answered by the service; speak the greeting
+                # INTO it (call_and_speak would place a new outbound call).
+                await self.service.speak_into_call(greeting)
 
             while self.service.has_active_call():
                 if self._stopping:
@@ -165,18 +167,14 @@ class SIPSource(BaseSource):
     async def _record_and_transcribe(self) -> str | None:
         """Record one utterance from the active call and transcribe it.
 
-        Structural placeholder: the real implementation records via a PJSIP
-        WAV recorder port until 700 ms silence (or a configured timeout),
-        then transcribes with Whisper. Returns None if there is nothing to
-        transcribe or the call has ended.
+        Delegates to the SIPService, which records via a PJSIP WAV recorder
+        port (for a configured window) and transcribes with Whisper. Returns
+        None if there is nothing to transcribe or the call has ended.
 
         Returns:
             The transcript text, or None.
         """
-        # Real implementation delegates to self.service for the PJSIP WAV
-        # recorder port and a Whisper model; not available here.
-        await asyncio.sleep(0)
-        return None
+        return await self.service.record_utterance()
 
     async def start(self) -> None:
         """Register the SIP account and idle while running.

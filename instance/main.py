@@ -198,11 +198,7 @@ async def main(config_path: str) -> None:
     await tasks.init()
 
     registry = ToolRegistry()
-    for t in CORE_TOOLS:
-        registry.register(t)
-    for t in MEMORY_TOOLS:
-        registry.register(t)
-    for t in TASK_TOOLS:
+    for t in (*CORE_TOOLS, *MEMORY_TOOLS, *TASK_TOOLS):
         registry.register(t)
 
     time_config = config.plugins.get("time_tools", {})
@@ -310,6 +306,10 @@ async def main(config_path: str) -> None:
             password=sip_config.get("password", ""),
             user_uris=user_uris,
             greeting=sip_config.get("greeting", ""),
+            piper_model=sip_config.get("piper_model", ""),
+            whisper_model=sip_config.get("whisper_model", "small"),
+            record_seconds=sip_config.get("record_seconds", 8),
+            port=sip_config.get("port", 0),
         )
         services["sip"] = sip_service
 
