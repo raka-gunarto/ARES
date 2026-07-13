@@ -88,8 +88,11 @@ class SIPSource(BaseSource):
         Args:
             from_uri: The SIP URI the call came from.
         """
-        allowed = set(self.service.user_uris.values()) if self.service else set()
-        if from_uri not in allowed:
+        # Match leniently (substring), consistent with SIPService — the incoming
+        # From URI carries angle brackets / display names / ports, e.g.
+        # '<sip:phone@172.16.0.1>', so exact set membership wrongly rejects it.
+        allowed = list(self.service.user_uris.values()) if self.service else []
+        if not any(a in from_uri for a in allowed):
             log.warning("sip: rejecting call from unknown uri %s", from_uri)
             return
 
