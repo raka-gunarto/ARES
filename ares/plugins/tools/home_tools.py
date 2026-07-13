@@ -141,6 +141,16 @@ class ControlDevice(BaseTool):
             # Extract domain from entity_id
             domain = entity_id.split(".")[0]
 
+            # SECURITY: refuse safety-gated outbound actions (doors/alarm), which
+            # must never be triggered by retrieved/external content (§14, C3).
+            if not svc.control_allowed(domain, action):
+                return ToolResult(
+                    False,
+                    f"Refused: '{action}' on '{entity_id}' is a safety-gated action "
+                    "(e.g. unlocking a door or disarming the alarm) and cannot be "
+                    "triggered by ARES. The operator can do it from the dashboard.",
+                )
+
             # Build data dict based on action and value
             data: dict[str, typing.Any] = {}
             if value is not None:

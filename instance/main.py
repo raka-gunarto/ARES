@@ -255,6 +255,7 @@ async def main(config_path: str) -> None:
             allowed_domains=ha_config.get(
                 "allowed_domains", ["binary_sensor", "person", "alarm_control_panel"]
             ),
+            blocked_controls=ha_config.get("blocked_controls"),
         )
         services["home_assistant"] = ha_service
         for t in HOME_TOOLS:
@@ -303,7 +304,6 @@ async def main(config_path: str) -> None:
     if sip_config.get("enabled"):
         user_uris = {uid: u.sip_uri for uid, u in config.users.items() if u.sip_uri}
 
-        # Create SIP service (raises RuntimeError if pjsua2 not installed)
         sip_service = SIPService(
             server=sip_config.get("server", ""),
             username=sip_config.get("username", ""),

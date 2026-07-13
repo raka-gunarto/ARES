@@ -46,6 +46,10 @@ plugins:
     token: !secret HA_TOKEN
     allowed_domains: [binary_sensor, person, alarm_control_panel]
     allowed_entities: []
+    # Outbound control safety gate (§14): domain.service pairs the LLM's
+    # control_device tool must REFUSE. Default-denies doors + alarm disarm so a
+    # poisoned note/message can't unlock the house. [] = allow all (not advised).
+    blocked_controls: [lock.unlock, lock.open, alarm_control_panel.alarm_disarm]
     debounce_seconds: 5
     priority_rules:
       - match: "binary_sensor.smoke_*"
@@ -95,7 +99,7 @@ plugins:
     db_path: instance/privq.db       # production: /var/lib/ares/privq.db
   dashboard:
     enabled: true
-    host: 0.0.0.0
+    host: 127.0.0.1        # loopback only; reach it via SSH tunnel / Tailscale / cloudflared
     port: 8788
     password: !secret DASHBOARD_PASSWORD
   selfedit:

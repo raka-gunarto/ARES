@@ -43,24 +43,50 @@ _PRIORITY_MAP: dict[str, Priority] = {
 
 _SNAPSHOT_TTL = 30.0
 
+# SECURITY (§14, PATCH-3): outbound control is NOT gated by the inbound event
+# allow-list. Without this, the LLM could unlock doors / disarm the alarm from a
+# poisoned memory note or crafted message. These `domain.service` pairs are
+# DEFAULT-DENIED for LLM-initiated `control_device`; the operator can override
+# `home_assistant.blocked_controls` in config (empty list = allow all).
+DEFAULT_BLOCKED_CONTROLS = (
+    "lock.unlock",
+    "lock.open",
+    "alarm_control_panel.alarm_disarm",
+)
+
 
 class HAService:
     """REST client for Home Assistant, placed in services["home_assistant"]."""
 
-    def __init__(self, rest_url: str, token: str, allowed_domains: list[str]) -> None:
+    def __init__(
+        self,
+        rest_url: str,
+        token: str,
+        allowed_domains: list[str],
+        blocked_controls: list[str] | None = None,
+    ) -> None:
         """Initialize the service.
 
         Args:
             rest_url: Base URL of the Home Assistant REST API.
             token: Long-lived access token.
             allowed_domains: Domains fetched by snapshot_summary().
+            blocked_controls: `domain.service` pairs that LLM-initiated
+                control_device must refuse (default: doors/alarm disarm).
         """
         self.rest_url = rest_url.rstrip("/")
         self.token = token
         self.allowed_domains = allowed_domains
+        self.blocked_controls = frozenset(
+            blocked_controls if blocked_controls is not None else DEFAULT_BLOCKED_CONTROLS
+        )
         self._client = httpx.AsyncClient(timeout=10.0)
         self._snap_cache: str | None = None
         self._snap_ts: float = 0.0
+
+    def control_allowed(self, domain: str, action: str) -> bool:
+        """True unless `domain.action` is on the outbound safety denylist (§14)."""
+        return f"{domain}.{action}" not in self.blocked_controls
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.token}"}
