@@ -1002,10 +1002,9 @@ plugins:
     password: !secret DASHBOARD_PASSWORD
   selfedit:
     enabled: false
-    live_code_path: /opt/ares/app    # read-only view of running code
-    scratch_repo: /home/ares-sbx/scratch/ares
     github_repo: youruser/ares       # owner/name
-    github_token: !secret GITHUB_TOKEN   # fine-grained: PRs read/write only
+    base_branch: main
+    github_token: !secret GITHUB_TOKEN   # fine-grained: contents+PR write, NO admin
 ```
 
 In production the config file lives at `/etc/ares/config.yaml` and the state
@@ -1248,8 +1247,9 @@ and never assumes more privilege than it has.
 
 - Memory / tasks / privilege queue → `/var/lib/ares` (daemon writable). OK.
 - Shell tool → executes **as `ares-sbx`**, never as `ares`. §15.
-- Self-edit → operates **only** in `/home/ares-sbx/scratch/ares`, produces a
-  PR. Never writes `/opt/ares`. §18.
+- Self-edit → **API-only from the daemon** (GitHub Git-Data API); no local
+  clone, no sandbox, token never on disk. Produces a PR on a new branch; never
+  writes `/opt/ares` and never pushes the base branch. §18.
 - System changes (package installs, unit changes) → only via the privilege
   queue → broker, human-approved. ARES itself has no sudo. §16.
 
@@ -1461,18 +1461,24 @@ open_pr(branch: string, title: string, body: string,
   keywords: code, edit, self, pr, pull, request, patch, improve, fix, propose
 ```
 
-Behaviour (all inside `scratch_repo`, as `ares-sbx` via `run_shell`-style
-exec, never touching `/opt/ares`):
+Behaviour (v1.2/PATCH-3 — **entirely API-driven in the daemon; no local git
+clone and no sandbox exec**, so the token never touches disk or `ares-sbx`, and
+the daemon only ever creates a *new* branch + PR, never the base ref):
 
-1. Ensure the scratch clone exists and is clean; `git fetch origin`,
-   `git checkout -B {branch} origin/main`.
-2. Write each file's `content` to its `path` **within the scratch repo only**
-   (reject absolute paths or paths escaping the repo → `ok=False`).
-3. `git add -A && git commit -m {title}` (author: `ARES <ares@localhost>`).
-4. `git push origin {branch}` using `GITHUB_TOKEN`.
-5. Create the PR via GitHub REST (`POST /repos/{repo}/pulls`, base `main`).
-   Store the PR number/url in a small in-memory cache for `/api/prs`.
-6. Return `ok=True` with the PR URL.
+1. Reject `branch == base_branch` (the daemon must never target `main`), and
+   reject any file `path` that is absolute or contains `.` / `..` segments →
+   `ok=False`, before any API call.
+2. Read the base branch tip: `GET git/ref/heads/{base}` → base commit sha;
+   `GET git/commits/{sha}` → base tree sha.
+3. `POST git/blobs` per file (base64), `POST git/trees` (from the base tree),
+   `POST git/commits` (author `ARES <ares@localhost>`, parent = base sha).
+4. Create the new branch ref `POST git/refs` (`refs/heads/{branch}`); if it
+   exists, fast-forward it. The base ref (`main`) is **never** written.
+5. Open the PR `POST pulls` (`head={branch}`, `base={base}`). Store the PR
+   number/url in a small in-memory cache for `/api/prs`.
+6. Return `ok=True` with the PR URL. The `GITHUB_TOKEN` lives only in the
+   `Authorization` header of these daemon-side requests — never in a
+   ToolResult, log, on disk, or in the sandbox.
 
 ```
 get_pr_status(number: integer) -> ToolResult
@@ -1481,11 +1487,14 @@ get_pr_status(number: integer) -> ToolResult
      accepted its change.
 ```
 
-Constraints: the fine-grained `GITHUB_TOKEN` grants **PR + contents write on the
-one repo, nothing else**; it has no merge-to-`main` if branch protection is on
-(the operator enables branch protection — documented in `DEPLOYMENT.md`). ARES
-merging its own PR is out of scope and structurally prevented by branch
-protection, not by ARES's own restraint.
+Constraints: the fine-grained `GITHUB_TOKEN` grants **contents + PR write on the
+one repo, nothing else** (no admin). ARES can never *merge* (branch protection +
+the operator) and, because `open_pr` refuses the base branch and only ever writes
+a new branch ref, it can never *push to `main`* either — the "human merge is the
+only path to running code" invariant no longer rests on branch protection alone.
+For belt-and-braces the operator still enables branch protection with **include
+administrators** and blocks force-push (documented in `DEPLOYMENT.md`); a
+machine-account fork is the strongest option.
 
 ---
 

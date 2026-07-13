@@ -90,7 +90,8 @@ the thing that creates the security boundary. It:
   - `/etc/ares/.env` → `0600 root:root` (**ARES cannot read this**).
   - `/etc/ares/broker.json`, `/etc/ares/updater.json` → `0600 root:root`.
   - `/var/lib/ares` → `0700 ares:ares` (state, memory, DBs).
-  - `/home/ares-sbx/scratch` → `ares-sbx` (self-edit clone).
+  - `/home/ares-sbx/scratch` → `ares-sbx` (sandbox scratch for `run_shell`;
+    self-edit no longer uses a clone — it is API-only from the daemon).
 - Installs `deploy/sbx-runner` to **`/usr/local/sbin/ares-sbx-runner`**
   (`root:root`, `0755`) — the sole sudo entry point `ares → ares-sbx`. It is
   installed **outside the app tree deliberately**: it is therefore not part of
@@ -180,11 +181,14 @@ to start rather than silently running everything as one user.
 ARES proposes code changes as PRs you review. To make the gate real:
 
 1. Push the ARES repo to GitHub (`youruser/ares`).
-2. **Enable branch protection on `main`:** require a pull request, require your
-   review, and (critically) **do not** allow the `GITHUB_TOKEN`'s identity to
-   merge. With the fine-grained PAT scoped to Contents+PRs only and no admin,
-   ARES can open and push to branches but cannot merge to `main`. You are the
-   only merge path.
+2. **Enable branch protection on `main`:** require a pull request + your review,
+   check **Include administrators**, and block force-pushes. This is now
+   belt-and-braces rather than the sole defense: since PATCH-3, `open_pr` is
+   API-only from the daemon, refuses to target `main`, and only ever creates a
+   *new* branch ref — so ARES cannot push to `main` even with a Contents-write
+   token. The fine-grained PAT stays scoped to Contents+PRs, **no admin**. You
+   are the only merge path. (Strongest option: give the token write only to a
+   machine-account **fork** and have ARES PR from the fork.)
 3. Create a webhook: Settings → Webhooks → `https://<your-tunnel>/gh`,
    content-type `application/json`, secret = `ARES_WEBHOOK_SECRET`, events =
    just `push`. This drives instant redeploys on merge; the updater's 5-minute

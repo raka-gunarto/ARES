@@ -146,16 +146,17 @@ def enforce_prod_tripwires(config: Config, *, secret_file: Path | None = None) -
             "(prod requires 0600 root:root; secrets come from the environment)"
         )
 
+    # Only the shell tool drops to a sandbox user in prod; self-edit is fully
+    # API-driven (no local exec), so it needs no sandbox_user (PATCH-3).
     me = getpass.getuser()
-    for name in ("shell", "selfedit"):
-        plugin = config.plugins.get(name, {})
-        if plugin.get("enabled"):
-            sandbox_user = plugin.get("sandbox_user", "")
-            if not sandbox_user or sandbox_user == me:
-                problems.append(
-                    f"{name}: sandbox_user missing or equals the daemon user "
-                    f"'{me}' — no privilege separation"
-                )
+    shell = config.plugins.get("shell", {})
+    if shell.get("enabled"):
+        sandbox_user = shell.get("sandbox_user", "")
+        if not sandbox_user or sandbox_user == me:
+            problems.append(
+                f"shell: sandbox_user missing or equals the daemon user "
+                f"'{me}' — no privilege separation"
+            )
 
     if problems:
         raise ProdTripwire(

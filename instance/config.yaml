@@ -104,7 +104,9 @@ plugins:
     password: !secret DASHBOARD_PASSWORD
   selfedit:
     enabled: false
-    live_code_path: /opt/ares/app    # read-only view of running code
-    scratch_repo: /home/ares-sbx/scratch/ares
+    # Fully API-driven (no local git clone, no sandbox): the token stays in the
+    # daemon and never reaches ares-sbx. open_pr only ever opens a PR on a NEW
+    # branch against base_branch — it can never push to base_branch.
     github_repo: youruser/ares       # owner/name
-    github_token: !secret GITHUB_TOKEN   # fine-grained: PRs read/write only
+    base_branch: main
+    github_token: !secret GITHUB_TOKEN   # fine-grained: contents+PR write, NO admin

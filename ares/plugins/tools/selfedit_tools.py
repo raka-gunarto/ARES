@@ -1,20 +1,21 @@
 """Self-edit -> pull request workflow (spec §18).
 
-ARES may propose changes to its own code by writing files into a scratch
-git clone and opening a GitHub pull request. It never writes its own live
-code (`live_code_path`) and never merges its own PR — merging is a human
-action gated by GitHub branch protection.
+ARES may propose changes to its own code by opening a GitHub pull request. It can
+never merge them — merging is a human action gated by branch protection.
 
-All git operations run inside `scratch_repo` only, executed as the
-unprivileged sandbox user when one is configured (mirrors
-`shell_tools.RunShell`'s exec pattern), never as the daemon user.
+SECURITY (PATCH-3, fixes C1/C2): ALL token-bearing work happens in the daemon
+process via the GitHub REST/Git-Data API over httpx. There is NO local git clone
+and NO sandbox exec, so:
+  - the `GITHUB_TOKEN` never touches disk or the `ares-sbx` sandbox that runs
+    arbitrary shells — ARES cannot read its own token (C1); and
+  - the daemon only ever creates a NEW branch ref + a PR against `base_branch`;
+    it never updates the base ref, and `open_pr` refuses `branch == base_branch`,
+    so ARES cannot push to `main` even with a write-scoped token (C2).
+The operator merging the PR on GitHub remains the sole path to running code.
 """
 from __future__ import annotations
 
-import asyncio
-import getpass
-import os
-from pathlib import Path
+import base64
 
 import httpx
 
@@ -22,10 +23,6 @@ from ares.core.tool import BaseTool, ToolContext, ToolResult
 from ares.core.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-DEV_WARNING = (
-    "[warning: sandbox_user not configured; running git as the daemon user — DEV ONLY]\n"
-)
 
 GITHUB_API = "https://api.github.com"
 
@@ -52,52 +49,16 @@ class PRCache:
         return list(self._entries)
 
 
-async def _run_git(
-    args: list[str], sandbox_user: str, cwd: str, secret: str = ""
-) -> tuple[int, str]:
-    """Run a git command, as the sandbox user when configured (mirrors RunShell).
-
-    `secret` (the GitHub token) is scrubbed from the returned output so a git
-    error that echoes the token-embedded remote URL can never leak it into a
-    ToolResult or log.
-    """
-
-    def _scrub(text: str) -> str:
-        return text.replace(secret, "***") if secret else text
-
-    env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": cwd or "/tmp",
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-    }
-
-    warning = ""
-    me = getpass.getuser()
-    env_mode = os.environ.get("ARES_ENV", "dev")
-    if env_mode == "prod" and (not sandbox_user or sandbox_user == me):
-        logger.error("selfedit git op refused: would run as the daemon user in prod")
-        return 1, "error: git execution refused (no sandbox user separation in prod)"
-
-    if sandbox_user:
-        argv = ["sudo", "-n", "-u", sandbox_user, "git"] + args
-    else:
-        argv = ["git"] + args
-        warning = DEV_WARNING
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=(cwd or None),
-            env=env,
-        )
-    except (FileNotFoundError, PermissionError, OSError) as e:
-        return 1, _scrub(f"error: failed to run git: {e}")
-
-    stdout, _ = await proc.communicate()
-    output = warning + _scrub(stdout.decode(errors="replace"))
-    return proc.returncode, output
+def _validate_path(raw_path: str) -> str | None:
+    """Return an error string if `raw_path` is not a safe repo-relative path."""
+    if not raw_path or raw_path.strip() == "":
+        return "error: empty file path"
+    if raw_path.startswith("/"):
+        return f"error: path '{raw_path}' must be repo-relative, not absolute"
+    parts = raw_path.split("/")
+    if ".." in parts or "." in parts:
+        return f"error: path '{raw_path}' must not contain '.' or '..' segments"
+    return None
 
 
 class OpenPR(BaseTool):
@@ -105,10 +66,9 @@ class OpenPR(BaseTool):
 
     name = "open_pr"
     description = (
-        "Propose a change to ARES's own source code by writing files into a "
-        "scratch git clone, committing, and opening a GitHub pull request. "
-        "ARES can never merge this PR — an operator reviews and merges it on "
-        "GitHub."
+        "Propose a change to ARES's own source code by opening a GitHub pull "
+        "request via the GitHub API. ARES can never merge this PR — an operator "
+        "reviews and merges it on GitHub. Never targets the base branch."
     )
     keywords = (
         "code",
@@ -146,26 +106,22 @@ class OpenPR(BaseTool):
 
     def __init__(
         self,
-        scratch_repo: str,
-        live_code_path: str,
         github_repo: str,
         github_token: str,
-        sandbox_user: str = "",
+        base_branch: str = "main",
         cache: PRCache | None = None,
     ) -> None:
-        """Store self-edit configuration; live_code_path is stored only to never be written to."""
-        self.scratch_repo = scratch_repo
-        self.live_code_path = live_code_path
+        """Store self-edit configuration. No scratch/sandbox — all API-driven."""
         self.github_repo = github_repo
         self.github_token = github_token
-        self.sandbox_user = sandbox_user
+        self.base_branch = base_branch or "main"
         self._cache = cache if cache is not None else PRCache()
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
-        """Write files into the scratch clone, commit, push, and open a PR (§18)."""
-        branch = kwargs.get("branch", "")
-        title = kwargs.get("title", "")
-        body = kwargs.get("body", "")
+        """Create a branch + commit + PR via the GitHub API (§18)."""
+        branch = (kwargs.get("branch") or "").strip()
+        title = kwargs.get("title") or ""
+        body = kwargs.get("body") or ""
         files = kwargs.get("files") or []
 
         if not branch or not title:
@@ -173,128 +129,122 @@ class OpenPR(BaseTool):
         if not files:
             return ToolResult(False, "error: files must be a non-empty list")
 
-        # SECURITY: validate every path BEFORE any git/network work. Never
-        # derive a write path from live_code_path.
-        scratch_root = Path(self.scratch_repo).resolve()
-        safe_paths: list[tuple[Path, str]] = []
+        # SECURITY (C2): never target the base branch — only ever a NEW branch.
+        if branch == self.base_branch:
+            return ToolResult(
+                False,
+                f"error: refusing to target the base branch '{self.base_branch}'; "
+                "open_pr proposes changes on a NEW branch for the operator to merge",
+            )
+
+        # SECURITY: validate every path before doing any API work.
         for f in files:
-            raw_path = f.get("path", "")
-            content = f.get("content", "")
-            if os.path.isabs(raw_path):
-                return ToolResult(
-                    False, f"error: path '{raw_path}' escapes the scratch repo"
-                )
-            resolved = (scratch_root / raw_path).resolve()
-            try:
-                resolved.relative_to(scratch_root)
-            except ValueError:
-                return ToolResult(
-                    False, f"error: path '{raw_path}' escapes the scratch repo"
-                )
-            safe_paths.append((resolved, content))
-
-        # Ensure the scratch clone exists.
-        if not (scratch_root / ".git").exists():
-            clone_url = (
-                f"https://x-access-token:{self.github_token}@github.com/"
-                f"{self.github_repo}.git"
-            )
-            scratch_root.parent.mkdir(parents=True, exist_ok=True)
-            rc, out = await _run_git(
-                ["clone", clone_url, str(scratch_root)],
-                self.sandbox_user,
-                str(scratch_root.parent),
-                self.github_token,
-            )
-            if rc != 0:
-                return ToolResult(False, f"clone failed: {out}")
-
-        rc, out = await _run_git(
-            ["fetch", "origin"], self.sandbox_user, str(scratch_root), self.github_token
-        )
-        if rc != 0:
-            return ToolResult(False, f"fetch failed: {out}")
-
-        rc, out = await _run_git(
-            ["checkout", "-B", branch, "origin/main"], self.sandbox_user, str(scratch_root)
-        )
-        if rc != 0:
-            return ToolResult(False, f"checkout failed: {out}")
-
-        rc, out = await _run_git(
-            ["reset", "--hard", "origin/main"], self.sandbox_user, str(scratch_root)
-        )
-        if rc != 0:
-            return ToolResult(False, f"reset failed: {out}")
-
-        # Write each file's content — the only writes performed.
-        try:
-            for resolved, content in safe_paths:
-                resolved.parent.mkdir(parents=True, exist_ok=True)
-                resolved.write_text(content, encoding="utf-8")
-        except OSError as e:
-            return ToolResult(False, f"error: failed to write files: {e}")
-
-        rc, out = await _run_git(["add", "-A"], self.sandbox_user, str(scratch_root))
-        if rc != 0:
-            return ToolResult(False, f"add failed: {out}")
-
-        rc, out = await _run_git(
-            [
-                "-c",
-                "user.name=ARES",
-                "-c",
-                "user.email=ares@localhost",
-                "commit",
-                "-m",
-                title,
-            ],
-            self.sandbox_user,
-            str(scratch_root),
-        )
-        if rc != 0:
-            return ToolResult(False, f"commit failed (nothing to commit?): {out}")
-
-        rc, out = await _run_git(
-            ["push", "--force-with-lease", "origin", branch],
-            self.sandbox_user,
-            str(scratch_root),
-            self.github_token,
-        )
-        if rc != 0:
-            return ToolResult(False, f"push failed: {out}")
+            err = _validate_path(f.get("path", ""))
+            if err:
+                return ToolResult(False, err)
 
         try:
-            entry = await self._create_pr(branch, title, body)
-        except (RuntimeError, httpx.HTTPError) as e:
-            return ToolResult(False, f"error: failed to open PR: {e}")
+            # 1. base commit + tree of the base branch.
+            st, ref = await self._github("GET", f"git/ref/heads/{self.base_branch}")
+            if st != 200:
+                return ToolResult(False, f"error: cannot read base branch (HTTP {st})")
+            base_sha = ref["object"]["sha"]
+            st, commit = await self._github("GET", f"git/commits/{base_sha}")
+            if st != 200:
+                return ToolResult(False, f"error: cannot read base commit (HTTP {st})")
+            base_tree = commit["tree"]["sha"]
 
-        self._cache.add(entry)
-        return ToolResult(True, f"opened PR #{entry['number']}: {entry['url']}")
+            # 2. a blob per file.
+            tree_items: list[dict] = []
+            for f in files:
+                content_b64 = base64.b64encode(
+                    (f.get("content") or "").encode("utf-8")
+                ).decode("ascii")
+                st, blob = await self._github(
+                    "POST", "git/blobs", {"content": content_b64, "encoding": "base64"}
+                )
+                if st != 201:
+                    return ToolResult(False, f"error: blob create failed (HTTP {st})")
+                tree_items.append(
+                    {"path": f["path"], "mode": "100644", "type": "blob", "sha": blob["sha"]}
+                )
 
-    async def _create_pr(self, branch: str, title: str, body: str) -> dict:
-        """Create the PR via GitHub REST. Isolated for testability (monkeypatch target)."""
-        headers = {
-            "Authorization": f"Bearer {self.github_token}",
-            "Accept": "application/vnd.github+json",
-        }
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(
-                f"{GITHUB_API}/repos/{self.github_repo}/pulls",
-                headers=headers,
-                json={"title": title, "head": branch, "base": "main", "body": body},
+            # 3. tree, 4. commit (author ARES), 5. new branch ref.
+            st, tree = await self._github(
+                "POST", "git/trees", {"base_tree": base_tree, "tree": tree_items}
             )
-        if response.status_code != 201:
-            raise RuntimeError(f"GitHub PR create failed: HTTP {response.status_code}")
+            if st != 201:
+                return ToolResult(False, f"error: tree create failed (HTTP {st})")
+            st, new_commit = await self._github(
+                "POST",
+                "git/commits",
+                {
+                    "message": title,
+                    "tree": tree["sha"],
+                    "parents": [base_sha],
+                    "author": {"name": "ARES", "email": "ares@localhost"},
+                },
+            )
+            if st != 201:
+                return ToolResult(False, f"error: commit create failed (HTTP {st})")
+            commit_sha = new_commit["sha"]
 
-        data = response.json()
-        return {
-            "number": data["number"],
-            "url": data["html_url"],
+            st, _ = await self._github(
+                "POST",
+                "git/refs",
+                {"ref": f"refs/heads/{branch}", "sha": commit_sha},
+            )
+            if st == 422:  # ref exists -> fast-forward it to the new commit
+                st, _ = await self._github(
+                    "PATCH", f"git/refs/heads/{branch}", {"sha": commit_sha, "force": True}
+                )
+            if st not in (200, 201):
+                return ToolResult(False, f"error: branch ref update failed (HTTP {st})")
+
+            # 6. the PR.
+            st, pr = await self._github(
+                "POST",
+                "pulls",
+                {"title": title, "head": branch, "base": self.base_branch, "body": body},
+            )
+            if st != 201:
+                return ToolResult(
+                    False,
+                    f"error: PR create failed (HTTP {st}); branch pushed as '{branch}'",
+                )
+        except httpx.HTTPError as e:
+            return ToolResult(False, f"error: GitHub API request failed: {e}")
+
+        entry = {
+            "number": pr["number"],
+            "url": pr["html_url"],
             "title": title,
             "branch": branch,
             "state": "open",
         }
+        self._cache.add(entry)
+        return ToolResult(True, f"opened PR #{entry['number']}: {entry['url']}")
+
+    async def _github(
+        self, method: str, path: str, json: dict | None = None
+    ) -> tuple[int, dict]:
+        """One authenticated GitHub API call. Isolated seam (monkeypatched in tests).
+
+        The token lives only in the Authorization header of this daemon-side
+        request — never on disk, never in a ToolResult or log.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.github_token}",
+            "Accept": "application/vnd.github+json",
+        }
+        url = f"{GITHUB_API}/repos/{self.github_repo}/{path}"
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.request(method, url, headers=headers, json=json)
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        return resp.status_code, data
 
 
 class GetPRStatus(BaseTool):
@@ -309,9 +259,7 @@ class GetPRStatus(BaseTool):
     keywords = ("pr", "pull", "request", "status", "merged", "review", "code")
     parameters = {
         "type": "object",
-        "properties": {
-            "number": {"type": "integer"},
-        },
+        "properties": {"number": {"type": "integer"}},
         "required": ["number"],
     }
     core = False
@@ -336,13 +284,11 @@ class GetPRStatus(BaseTool):
             return ToolResult(False, f"error: failed to fetch PR status: {e}")
 
         state = "merged" if data.get("merged") else data.get("state", "unknown")
-
         for entry in self._cache.all():
             if entry.get("number") == number:
                 entry["state"] = state
                 self._cache.add(entry)
                 break
-
         return ToolResult(True, f"PR #{number}: {state}")
 
     async def _fetch(self, number: int) -> dict:
@@ -353,8 +299,7 @@ class GetPRStatus(BaseTool):
         }
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.get(
-                f"{GITHUB_API}/repos/{self.github_repo}/pulls/{number}",
-                headers=headers,
+                f"{GITHUB_API}/repos/{self.github_repo}/pulls/{number}", headers=headers
             )
         if response.status_code != 200:
             raise RuntimeError(f"GitHub PR fetch failed: HTTP {response.status_code}")
@@ -363,20 +308,10 @@ class GetPRStatus(BaseTool):
 
 def build_selfedit_tools(config: dict, cache: PRCache) -> list[BaseTool]:
     """Factory for the self-edit tool plugin, used by main.py."""
-    scratch_repo = config.get("scratch_repo", "")
-    live_code_path = config.get("live_code_path", "")
     github_repo = config.get("github_repo", "")
     github_token = config.get("github_token", "")
-    sandbox_user = config.get("sandbox_user", "")
-
+    base_branch = config.get("base_branch", "main")
     return [
-        OpenPR(
-            scratch_repo,
-            live_code_path,
-            github_repo,
-            github_token,
-            sandbox_user,
-            cache,
-        ),
+        OpenPR(github_repo, github_token, base_branch, cache),
         GetPRStatus(github_repo, github_token, cache),
     ]

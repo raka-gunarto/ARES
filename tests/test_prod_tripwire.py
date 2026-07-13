@@ -90,16 +90,26 @@ def test_prod_trips_on_missing_sandbox_user(monkeypatch):
 
 
 def test_prod_trips_on_sandbox_user_equals_daemon(monkeypatch):
-    """Prod mode raises ProdTripwire if sandbox_user equals the daemon user."""
+    """Prod mode raises ProdTripwire if the shell sandbox_user equals the daemon user."""
     monkeypatch.setenv("ARES_ENV", "prod")
 
     current_user = getpass.getuser()
     config = types.SimpleNamespace(
-        plugins={"selfedit": {"enabled": True, "sandbox_user": current_user}}
+        plugins={"shell": {"enabled": True, "sandbox_user": current_user}}
     )
 
     with pytest.raises(ProdTripwire):
         enforce_prod_tripwires(config, secret_file=None)
+
+
+def test_prod_selfedit_needs_no_sandbox_user(monkeypatch):
+    """PATCH-3: self-edit is API-driven, so enabling it in prod without a
+    sandbox_user must NOT trip (unlike shell)."""
+    monkeypatch.setenv("ARES_ENV", "prod")
+    config = types.SimpleNamespace(
+        plugins={"selfedit": {"enabled": True}}  # no sandbox_user, and that's fine now
+    )
+    enforce_prod_tripwires(config, secret_file=None)  # must not raise
 
 
 # ============================================================================
