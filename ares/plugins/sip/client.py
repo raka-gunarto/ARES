@@ -120,6 +120,7 @@ class SIPService:
         whisper_model: str = "small",
         record_seconds: int = 8,
         port: int = 0,
+        answer_settle_seconds: float = 1.2,
     ) -> None:
         """Initialize the SIP service.
 
@@ -133,6 +134,11 @@ class SIPService:
             record_seconds: per-utterance record window for in-call STT (§7.5
                 allows a configured timeout in place of live VAD endpointing).
             port: local SIP UDP port (0 = any).
+            answer_settle_seconds: pause after an outbound call's media goes
+                active, before speaking. A mobile softphone over ZeroTier needs a
+                moment to prime its audio output / jitter buffer after answering;
+                speaking immediately loses the opening — the whole message if it
+                is short — so the callee hears silence.
 
         Raises:
             RuntimeError: if the `sip` extra (pjsua2) is not installed.
@@ -151,6 +157,7 @@ class SIPService:
         self.whisper_model = whisper_model
         self.record_seconds = record_seconds
         self.port = port
+        self.answer_settle_seconds = answer_settle_seconds
 
         self._on_call: Callable[[str], None] | None = None
         self._on_message: Callable[[str, str], None] | None = None
@@ -293,7 +300,12 @@ class SIPService:
         call.makeCall(uri, prm)
         self._active_call = call
         if call.media_ready.wait(timeout=30) and not call.disconnected.is_set():
-            if wav:
+            # Let the callee's audio path settle before speaking (see
+            # answer_settle_seconds) — otherwise a short message is lost and the
+            # callee just hears silence.
+            if self.answer_settle_seconds > 0:
+                time.sleep(self.answer_settle_seconds)
+            if wav and not call.disconnected.is_set():
                 self._play_wav_blocking(call, wav)
 
     async def speak_into_call(self, text: str) -> bool:

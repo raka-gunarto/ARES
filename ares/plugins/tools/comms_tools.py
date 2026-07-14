@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ares.core.channel import ChannelType
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 
 
@@ -33,9 +34,15 @@ class PlaceCall(BaseTool):
 
         try:
             await svc.call_and_speak(uri, kwargs["message"], True)
-            return ToolResult(True, "Call initiated.")
         except Exception as e:
             return ToolResult(False, f"SIP error: {e}")
+
+        # We are now on a call with the user: route further `speak` output into
+        # the live call. Without this the active channel stays whatever the
+        # request arrived on (e.g. the dashboard), so anything said after the
+        # opening message is delivered there and the caller hears only silence.
+        ctx.session.active_channel = ChannelType.SIP_CALL
+        return ToolResult(True, "Call initiated.")
 
 
 class SendSipMessage(BaseTool):

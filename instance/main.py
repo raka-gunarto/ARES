@@ -310,6 +310,7 @@ async def main(config_path: str) -> None:
             whisper_model=sip_config.get("whisper_model", "small"),
             record_seconds=sip_config.get("record_seconds", 8),
             port=sip_config.get("port", 0),
+            answer_settle_seconds=sip_config.get("answer_settle_seconds", 1.2),
         )
         services["sip"] = sip_service
 
