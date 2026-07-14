@@ -47,6 +47,9 @@ body{
 }
 .logo b{color:var(--teal);text-shadow:0 0 8px rgba(0,255,255,.7)}
 .tagline{color:var(--muted2);font-size:11px;letter-spacing:.28em;text-transform:uppercase}
+.hmeta{display:flex;align-items:center;gap:12px}
+.ver{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+  letter-spacing:.04em;color:var(--muted2);white-space:nowrap;cursor:default}
 
 .pill{
   display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.06em;
@@ -381,7 +384,11 @@ function App(){
   const [messages,setMessages]=useState([]);
   const [toast,setToast]=useState(null);
   const [pendingCount,setPending]=useState(0);
+  const [version,setVersion]=useState(null);
   const apiRef=useRef(null);
+
+  // Deployed commit SHA (no auth; shows on the lock screen too).
+  useEffect(()=>{ fetch("/api/version").then(r=>r.json()).then(v=>setVersion(v&&v.short)).catch(()=>{}); },[]);
 
   const showToast=(msg,kind)=>{ setToast({msg,kind}); clearTimeout(showToast._t); showToast._t=setTimeout(()=>setToast(null),3500); };
   const unauth=()=>{ localStorage.removeItem(TOKEN_KEY); setTok(""); setHealth(false); showToast("Unauthorized — check token","err"); };
@@ -427,7 +434,7 @@ function App(){
   if(!token){
     return html`
       <div class="wrap">
-        ${Header(health,pendingCount)}
+        ${Header(health,pendingCount,version)}
         <div class="rule"></div>
         <div class="tokenbar locked">
           <label>DASHBOARD TOKEN</label>
@@ -466,7 +473,7 @@ function App(){
     </div>`;
 }
 
-function Header(health,pending){
+function Header(health,pending,version){
   const cls = health===true?"pill ok":health===false?"pill bad":"pill";
   const label = health===true?"ONLINE":health===false?"OFFLINE":"—";
   return html`
@@ -475,7 +482,10 @@ function Header(health,pending){
         <div class="logo">AR<b>E</b>S</div>
         <div class="tagline">agentic runtime</div>
       </div>
-      <div class=${cls}><span class="dot"></span>${label}</div>
+      <div class="hmeta">
+        <span class="ver" title=${version?("deployed commit "+version):"version unknown"}>${version?("build "+version):"build —"}</span>
+        <div class=${cls}><span class="dot"></span>${label}</div>
+      </div>
     </div>`;
 }
 

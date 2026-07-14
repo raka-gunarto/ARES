@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hmac
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +18,20 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from ares.core.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# The updater records the deployed commit here (see updater/aresupdater.py
+# write_released_sha). Overridable for dev via ARES_RELEASED_SHA_FILE.
+RELEASED_SHA_FILE = os.environ.get("ARES_RELEASED_SHA_FILE", "/opt/ares/RELEASED_SHA")
+
+
+def read_released_sha() -> str | None:
+    """Return the deployed commit SHA, or None if it isn't recorded/readable."""
+    try:
+        with open(RELEASED_SHA_FILE, "r", encoding="utf-8") as f:
+            sha = f.read().strip()
+    except OSError:
+        return None
+    return sha or None
 
 
 def task_to_dict(task: Any) -> dict:
@@ -77,6 +92,13 @@ def build_app(
     async def index() -> FileResponse:
         """Serve the dashboard's static index.html. No auth required."""
         return FileResponse(static_dir / "index.html")
+
+    @app.get("/api/version")
+    async def get_version() -> JSONResponse:
+        """Deployed commit SHA. No auth: a commit SHA is not sensitive, and the
+        lock screen shows it before a token is entered."""
+        sha = read_released_sha()
+        return JSONResponse({"sha": sha, "short": sha[:8] if sha else None})
 
     @app.post("/api/chat", dependencies=[api_auth])
     async def post_chat(request: Request) -> JSONResponse:
