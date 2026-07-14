@@ -58,6 +58,7 @@ Both are now real (M4): TaskStore backed by SQLite, FilesystemMemory on disk.
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 from pathlib import Path
@@ -158,11 +159,25 @@ async def supervise(source: BaseSource, bus) -> None:
             await asyncio.sleep(SOURCE_RESTART_DELAY_S)
 
 
+def resolve_secret_env_path() -> Path:
+    """Return the dotenv path the daemon reads secrets from.
+
+    Dev falls back to the committed ``instance/.env.example`` for convenience.
+    In prod, secrets come exclusively from ``os.environ`` (systemd
+    ``EnvironmentFile=/etc/ares/.env``, 0600 root:root), so we never point at a
+    readable dotenv in the app tree: an updater-checked-out release still
+    contains the committed ``instance/.env.example``, and reading it would
+    (correctly) trip the §14.4 secret-file tripwire and refuse to start.
+    """
+    env_path = Path("instance/.env")
+    if not env_path.exists() and os.environ.get("ARES_ENV", "dev") != "prod":
+        env_path = Path("instance/.env.example")
+    return env_path
+
+
 async def main(config_path: str) -> None:
     """Load config, build core objects, and run the daemon until shutdown."""
-    env_path = Path("instance/.env")
-    if not env_path.exists():
-        env_path = Path("instance/.env.example")
+    env_path = resolve_secret_env_path()
     secrets = EnvSecretStore(env_path)
     config = load_config(Path(config_path), secrets)
     enforce_prod_tripwires(config, secret_file=env_path)
