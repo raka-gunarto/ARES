@@ -34,7 +34,7 @@ class MemoryGrep(BaseTool):
         },
         "required": ["pattern"],
     }
-    core = False
+    core = True  # always in context (§5) so ARES recalls without being asked
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Execute memory grep."""
@@ -63,7 +63,7 @@ class MemoryRead(BaseTool):
         },
         "required": ["path"],
     }
-    core = False
+    core = True  # always in context (§5)
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Execute memory read."""
@@ -103,7 +103,7 @@ class MemoryWrite(BaseTool):
         },
         "required": ["path", "content"],
     }
-    core = False
+    core = True  # always in context (§5) so ARES stores durable facts unprompted
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Execute memory write."""
@@ -124,7 +124,7 @@ class MemoryList(BaseTool):
         "type": "object",
         "properties": {},
     }
-    core = False
+    core = True  # always in context (§5)
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Execute memory list."""
@@ -148,7 +148,7 @@ class MemoryDelete(BaseTool):
         },
         "required": ["path"],
     }
-    core = False
+    core = False  # deliberately discoverable-only: destructive, rarely needed (§6.1)
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Execute memory delete."""

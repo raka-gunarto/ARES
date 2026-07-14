@@ -1,12 +1,29 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.3. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.4. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4. ***
+
+v1.4 (operator-authorised) done: proactive memory + queue awareness.
+ - Memory recall/store tools promoted from discoverable (§6.1) to CORE / always-in-context
+   (§5): `memory_grep`, `memory_read`, `memory_list`, `memory_write` now `core = True`, so
+   ARES recalls/stores without a `search_tools` step. Destructive `memory_delete` stays
+   discoverable-only (out of the always-loaded set). Registry keys off `.core`, so the flip
+   is sufficient; no main.py change. (Tasks were already core + auto-injected.)
+ - Persona (instance/config.yaml) extended with proactive-use guidance (recall before
+   answering, write durable facts unprompted, create/close tasks) + a TRUE queue-awareness
+   line (always-on loop, events queue and are handled one-at-a-time in order — never two at
+   once). NB the observed "events arrive mid-tool-call" is queued ARRIVAL, not concurrent
+   processing: everything runs as user_id "primary" -> one FIFO per-user worker, strictly
+   serial; only CRITICAL takes the separate inline non-agent path.
+ - DEPLOY SPLIT: memory_tools.py is `ares` code -> auto-deploys via the updater on merge.
+   The persona is CONFIG (/etc/ares/config.yaml in the rootfs) -> NOT carried by the updater;
+   needs a manual rootfs edit + `systemctl restart ares` to go live.
+ Full suite: 244 passed, 1 skipped (shellcheck, Docker-covered).
 
 v1.3 (operator-authorised spec change) done: added the `read_source` self-inspection tool
 (§18). Read-only, daemon-side, scoped to the source root (derived from the running `ares`
@@ -265,6 +282,17 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-07-14 (v1.4): operator authorised promoting memory recall/store tools to core.
+  Rationale: proactive memory use was blocked by a discovery step — ARES had to `search_tools`
+  for memory before it could recall/store, so it rarely did unprompted. Making `memory_grep/
+  read/list/write` core (always in context) removes that friction; tasks were already core +
+  auto-injected. Kept `memory_delete` discoverable-only: destructive and rarely needed, so it
+  stays out of the always-loaded set (search_tools still surfaces it). Proactive-behaviour
+  guidance went in the PERSONA (editable config, concatenated before the frozen RULES block),
+  NOT in RULES — RULES stays verbatim/injection-only per §4.11. Rejected the alternative
+  (auto-injecting a memory index into the prompt): core tools + persona nudge is lower-risk
+  and doesn't grow the context every turn. Also corrected the premise that ARES multitasks —
+  all primary-user events share one serial FIFO worker; the persona line says so truthfully.
 - 2026-07-14 (v1.3): operator authorised adding `read_source` to the frozen tool inventory
   (§18) after ARES could not open a comment-change self-edit PR — `open_pr` needs full file
   content and nothing exposed the daemon's read access to its own source. Chosen shape:

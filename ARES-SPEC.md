@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.3
+# ARES — Implementation Specification v1.4
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -21,6 +21,13 @@ tool that lets ARES read its own source in the same repo-relative path space
 It surfaces the daemon's *existing* read-only access to `/opt/ares/app` (§14.2)
 to the model — it grants no new privilege, never leaves the source tree, and
 never reads the secrets file. No new dependency.
+
+v1.4 promotes the four **recall/store** memory tools (`memory_grep`,
+`memory_read`, `memory_list`, `memory_write`) from discoverable (§6.1) to **core /
+always-in-context** (§5), so ARES recalls and stores without first having to
+`search_tools` for the capability — enabling proactive memory use. The
+destructive `memory_delete` stays discoverable-only (§6.1). No new tool, no new
+dependency; this only changes which existing tools are always loaded.
 
 ---
 
@@ -699,7 +706,10 @@ class TaskStore:
 
 ## 5. Core Tools (always in context)
 
-All defined in `plugins/tools/core_tools.py`, all `core = True`. Six tools, no more.
+Six tools defined in `plugins/tools/core_tools.py`, plus (since v1.4) the four
+recall/store memory tools defined in `plugins/tools/memory_tools.py` — ten tools
+total, all `core = True`, all always loaded into the LLM context (no
+`search_tools` step required).
 
 | name | parameters (JSON Schema properties) | behaviour |
 |---|---|---|
@@ -710,22 +720,34 @@ All defined in `plugins/tools/core_tools.py`, all `core = True`. Six tools, no m
 | `create_task` | `type: enum[5 types]`, `title: string`, `detail: string?`, `due_at: string? (ISO8601)`, `trigger: string?` | `ctx.tasks.create(...)`. Content = `"Task {id} created."` |
 | `close_task` | `task_id: string`, `resolution: string` | `ctx.tasks.close(...)`. `"Task closed."` or `ok=False, "No such open task."` |
 
+The four core memory tools (`memory_grep`, `memory_read`, `memory_list`,
+`memory_write`) are specified in §6.1; they live in `memory_tools.py` but carry
+`core = True` so recall and storage are always available. Only the destructive
+`memory_delete` remains discoverable-only.
+
 ---
 
 ## 6. Discoverable Tools (loaded via `search_tools`)
 
-All `core = False`. Keywords shown are the minimum set; implementers may add
-synonyms but never remove listed ones.
+All `core = False` **except** the four memory recall/store tools in §6.1, which
+are `core = True` (v1.4) and always in context per §5. Keywords shown are the
+minimum set; implementers may add synonyms but never remove listed ones.
 
 ### 6.1 `memory_tools.py`
 
-| name | params | keywords | behaviour |
-|---|---|---|---|
-| `memory_grep` | `pattern: string`, `scope: enum[all,short,long] = all` | memory, remember, recall, search, grep, know, history | `ctx.memory.grep` |
-| `memory_read` | `path: string` | memory, read, file, notes | `ctx.memory.read`. Reading `INDEX.md` first is encouraged in the tool description. |
-| `memory_write` | `path: string`, `content: string`, `mode: enum[append,overwrite] = append` | memory, write, save, remember, note, learn | `ctx.memory.write`. Description instructs: tag entries with `<!-- tags: ... -->`, keep INDEX.md updated after structural changes, daily log goes to `short-term/YYYY-MM-DD.md`. |
-| `memory_list` | none | memory, list, files, index | `ctx.memory.list` |
-| `memory_delete` | `path: string` | memory, delete, remove, forget, prune | `ctx.memory.delete` |
+`memory_grep`, `memory_read`, `memory_list`, `memory_write` are **`core = True`**
+(v1.4 — always in context, §5), so ARES recalls and stores without a
+`search_tools` step. `memory_delete` is **`core = False`** (discoverable-only):
+it is destructive and rarely needed, so it is kept out of the always-loaded set.
+Keywords still apply so `search_tools` surfaces `memory_delete` when relevant.
+
+| name | core | params | keywords | behaviour |
+|---|---|---|---|---|
+| `memory_grep` | yes | `pattern: string`, `scope: enum[all,short,long] = all` | memory, remember, recall, search, grep, know, history | `ctx.memory.grep` |
+| `memory_read` | yes | `path: string` | memory, read, file, notes | `ctx.memory.read`. Reading `INDEX.md` first is encouraged in the tool description. |
+| `memory_write` | yes | `path: string`, `content: string`, `mode: enum[append,overwrite] = append` | memory, write, save, remember, note, learn | `ctx.memory.write`. Description instructs: tag entries with `<!-- tags: ... -->`, keep INDEX.md updated after structural changes, daily log goes to `short-term/YYYY-MM-DD.md`. |
+| `memory_list` | yes | none | memory, list, files, index | `ctx.memory.list` |
+| `memory_delete` | no | `path: string` | memory, delete, remove, forget, prune | `ctx.memory.delete` |
 
 ### 6.2 `task_tools.py`
 
