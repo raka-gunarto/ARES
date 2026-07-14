@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ares.core.secrets import BaseSecretStore, SecretNotFound
 
@@ -54,6 +54,15 @@ class TasksConfig(BaseModel):
     db_path: str
 
 
+class TraceConfig(BaseModel):
+    """Live activity-trace configuration (rotating JSONL of agent activity)."""
+
+    enabled: bool = True
+    path: str = "/var/lib/ares/trace/trace.jsonl"
+    max_mb: int = 100
+    backups: int = 3
+
+
 class UserConfig(BaseModel):
     """User-specific configuration."""
 
@@ -75,6 +84,7 @@ class Config(BaseModel):
     session: SessionConfig
     memory: MemoryConfig
     tasks: TasksConfig
+    trace: TraceConfig = Field(default_factory=TraceConfig)
     users: dict[str, UserConfig]
     plugins: dict[str, dict]
 

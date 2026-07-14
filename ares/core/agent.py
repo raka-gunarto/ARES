@@ -15,6 +15,7 @@ from ares.core.prompt import build_system_prompt
 from ares.core.router import ResponseRouter
 from ares.core.session import SessionManager
 from ares.core.tool import ToolContext, ToolRegistry, ToolResult
+from ares.core.trace import NullTracer, Tracer
 from ares.core.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -42,6 +43,7 @@ class Agent:
         services: dict[str, object],
         persona: str,
         max_tool_iterations: int = 10,
+        tracer: Tracer | None = None,
     ) -> None:
         """Store collaborators needed to process events."""
         self.llm = llm
@@ -53,6 +55,7 @@ class Agent:
         self.services = services
         self.persona = persona
         self.max_tool_iterations = max_tool_iterations
+        self.tracer = tracer or NullTracer()
 
     async def handle(self, event: Event) -> None:
         """Process a single event end-to-end per spec §4.10."""
@@ -84,6 +87,20 @@ class Agent:
                 {"role": "user", "content": event_text}
             ]
 
+            self.tracer.emit(
+                "event",
+                event_id=event.id,
+                source=event.source,
+                type=event.type,
+                user_id=event.user_id,
+                priority=getattr(event.priority, "name", str(event.priority)),
+                room=event.room,
+                channel=str(session.active_channel),
+                user_initiated=user_initiated,
+                history_len=len(session.history),
+                text=event_text,
+            )
+
             # STEP 6
             active = self.registry.core_tools()
             active_names = {t.name for t in active}
@@ -96,6 +113,20 @@ class Agent:
             while True:
                 reply = await self.llm.chat(messages, self.registry.to_oai_schema(active))
                 tool_calls = reply.get("tool_calls")
+
+                self.tracer.emit(
+                    "reply",
+                    event_id=event.id,
+                    content=reply.get("content") or "",
+                    thinking=reply.get("reasoning_content") or reply.get("reasoning") or "",
+                    tool_calls=[
+                        {
+                            "name": tc.get("function", {}).get("name"),
+                            "arguments": tc.get("function", {}).get("arguments"),
+                        }
+                        for tc in (tool_calls or [])
+                    ],
+                )
 
                 if not tool_calls:
                     final_text = reply.get("content") or ""
@@ -133,6 +164,15 @@ class Agent:
                             except Exception as e:
                                 result = ToolResult(False, f"error: {e}")
 
+                    self.tracer.emit(
+                        "tool",
+                        event_id=event.id,
+                        name=name,
+                        arguments=args,
+                        ok=result.ok,
+                        result=result.content,
+                    )
+
                     if name == "speak" and result.ok:
                         spoke = True
                     if name == "send_notification" and result.ok:
@@ -163,6 +203,15 @@ class Agent:
                     )
                     final_reply = await self.llm.chat(messages, tools=None)
                     final_text = final_reply.get("content") or ""
+                    self.tracer.emit(
+                        "reply",
+                        event_id=event.id,
+                        content=final_text,
+                        thinking=final_reply.get("reasoning_content")
+                        or final_reply.get("reasoning") or "",
+                        tool_calls=[],
+                        forced_final=True,
+                    )
                     break
 
             # STEP 8
@@ -171,14 +220,24 @@ class Agent:
             elif not user_initiated and not spoke and not notified:
                 log.info("agent chose silence for event %s", event.id)
 
+            self.tracer.emit(
+                "final",
+                event_id=event.id,
+                text=final_text,
+                spoke=spoke,
+                notified=notified,
+                channel=str(session.active_channel),
+            )
+
             # STEP 9
             self.sessions.append_history(event.user_id, "user", event_text)
             self.sessions.append_history(
                 event.user_id, "assistant", final_text or "<acted via tools>"
             )
 
-        except Exception:
+        except Exception as e:
             log.exception("agent.handle failed for event %s", event.id)
+            self.tracer.emit("error", event_id=event.id, error=repr(e))
             if user_initiated:
                 try:
                     await self.router.speak(
