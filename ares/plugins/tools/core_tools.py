@@ -103,19 +103,49 @@ class CreateTask(BaseTool):
     """Create a new task for follow-up."""
 
     name = "create_task"
-    description = "Create a task to track something you are waiting on or need to remember."
+    description = (
+        "Create a task to track something you are waiting on or need to remember. "
+        "For anything time-based — a reminder, an alarm, or a 'remind me / call me at "
+        "<time>' request — use type 'reminder_pending' with a due_at; it fires then."
+    )
     keywords = ()
     parameters = {
         "type": "object",
         "properties": {
             "type": {
                 "type": "string",
-                "enum": ["awaiting_response", "monitoring", "reminder_pending", "multi_step", "deferred"]
+                "enum": ["awaiting_response", "monitoring", "reminder_pending", "multi_step", "deferred"],
+                "description": (
+                    "Task kind. 'reminder_pending' = fires at due_at (use for any "
+                    "time-based reminder/alarm/scheduled call). 'awaiting_response' = "
+                    "waiting on a person. 'monitoring' = watching a condition. "
+                    "'multi_step' = an ongoing multi-step job. 'deferred' = do later."
+                ),
             },
-            "title": {"type": "string"},
-            "detail": {"type": "string"},
-            "due_at": {"type": "string"},
-            "trigger": {"type": "string"}
+            "title": {"type": "string", "description": "Short summary of the task."},
+            "detail": {
+                "type": "string",
+                "description": (
+                    "What to do when it fires, including how to reach the person if "
+                    "relevant, e.g. 'call the user to remind them to head home'."
+                ),
+            },
+            "due_at": {
+                "type": "string",
+                "description": (
+                    "Absolute due time as an ISO-8601 UTC timestamp, e.g. "
+                    "'2026-07-14T10:30:00Z'. REQUIRED for 'reminder_pending' — without it "
+                    "the reminder never fires. Convert the person's local time to UTC "
+                    "using the 'UTC now' value shown in your context."
+                ),
+            },
+            "trigger": {
+                "type": "string",
+                "description": (
+                    "For condition-based tasks (monitoring/awaiting_response): a short "
+                    "description of the event that resolves it. Omit for plain reminders."
+                ),
+            },
         },
         "required": ["type", "title"]
     }
@@ -123,15 +153,28 @@ class CreateTask(BaseTool):
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Create a new task."""
+        due_at = kwargs.get("due_at")
+        # A reminder with no due time silently never fires — reject it so the model
+        # gets immediate feedback and retries with a computed UTC timestamp.
+        if kwargs["type"] == "reminder_pending" and not due_at:
+            return ToolResult(
+                ok=False,
+                content=(
+                    "reminder_pending requires due_at (ISO-8601 UTC, e.g. "
+                    "2026-07-14T10:30:00Z). Compute it from the 'UTC now' in your "
+                    "context and call create_task again."
+                ),
+            )
         task = await ctx.tasks.create(
             ctx.user_id,
             type=kwargs["type"],
             title=kwargs["title"],
             detail=kwargs.get("detail", ""),
-            due_at=kwargs.get("due_at"),
+            due_at=due_at,
             trigger=kwargs.get("trigger")
         )
-        return ToolResult(ok=True, content=f"Task {task.id} created.")
+        when = f" (due {due_at})" if due_at else ""
+        return ToolResult(ok=True, content=f"Task {task.id} created{when}.")
 
 
 class CloseTask(BaseTool):

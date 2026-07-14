@@ -10,6 +10,27 @@ import aiosqlite
 from ares.core.utils.ids import new_id
 
 
+def _parse_iso_utc(value: str | None) -> datetime | None:
+    """Parse an ISO8601 timestamp to an aware UTC datetime, or None if unparseable.
+
+    Tolerant of the shapes an LLM tends to emit: a trailing 'Z', an explicit
+    offset, or a naive value (read as UTC). This is why reminder matching parses
+    rather than string-compares — 'Z' would sort wrong against '+00:00'.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 @dataclasses.dataclass
 class Task:
     """Mirrors the tasks table schema."""
@@ -222,25 +243,37 @@ class TaskStore:
         return [self._row_to_task(row) for row in rows]
 
     async def list_due(self, now: datetime) -> list[Task]:
-        """List all open reminder_pending tasks due at or before now (ISO8601 comparison)."""
+        """List open reminder_pending tasks due at or before `now`.
+
+        due_at is parsed to a datetime (not string-compared) so a reminder fires
+        regardless of the exact ISO8601 spelling the agent produced ('Z' vs
+        '+00:00', with/without fractional seconds); a naive value reads as UTC and
+        an unparseable value is skipped rather than crashing the scheduler loop.
+        """
         if self._db is None:
             raise RuntimeError("TaskStore not initialized; call await init()")
 
-        now_iso = now.isoformat()
         cursor = await self._db.execute(
             """
             SELECT * FROM tasks
             WHERE status = 'open'
               AND type = 'reminder_pending'
               AND due_at IS NOT NULL
-              AND due_at <= ?
             ORDER BY due_at
-            """,
-            (now_iso,),
+            """
         )
         rows = await cursor.fetchall()
         await cursor.close()
-        return [self._row_to_task(row) for row in rows]
+
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+
+        due: list[Task] = []
+        for row in rows:
+            when = _parse_iso_utc(row["due_at"])
+            if when is not None and when <= now:
+                due.append(self._row_to_task(row))
+        return due
 
     async def history(self, user_id: str, limit: int = 20) -> list[Task]:
         """List closed tasks for a user, most recent first."""

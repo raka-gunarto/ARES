@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import typing
-from datetime import datetime
+from datetime import datetime, timezone
 
 if typing.TYPE_CHECKING:
     from ares.core.tasks.store import Task
@@ -82,7 +82,12 @@ def build_system_prompt(
     """
     # Build CONTEXT block
     context_parts = []
-    context_parts.append(f"Current time: {now:%Y-%m-%d %H:%M %Z}")
+    # Show local time AND the current UTC instant, so time-based tools (reminders
+    # store due_at in UTC) can be computed without the model guessing the offset.
+    now_utc = now.astimezone(timezone.utc)
+    context_parts.append(
+        f"Current time: {now:%Y-%m-%d %H:%M %Z} (UTC now: {now_utc:%Y-%m-%dT%H:%M:%SZ})"
+    )
 
     room = session.current_room or "unknown"
     context_parts.append(f"Active channel: {session.active_channel}. User's current room: {room}.")

@@ -142,6 +142,35 @@ class TestListDueBoundary:
 
         assert len(due) == 0
 
+    async def test_list_due_matches_z_suffix_and_naive_formats(self, store: TaskStore) -> None:
+        """A due_at with a 'Z' suffix or no offset still fires (parsed, not string-compared)."""
+        now = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+        z_task = await store.create(
+            "primary", "reminder_pending", "Z suffix", due_at="2030-06-01T11:30:00Z"
+        )
+        naive_task = await store.create(
+            "primary", "reminder_pending", "naive UTC", due_at="2030-06-01T11:45:00"
+        )
+        await store.create(
+            "primary", "reminder_pending", "future Z", due_at="2030-06-01T12:30:00Z"
+        )
+
+        due_ids = {t.id for t in await store.list_due(now)}
+        assert due_ids == {z_task.id, naive_task.id}
+
+    async def test_list_due_skips_unparseable_due_at(self, store: TaskStore) -> None:
+        """A malformed due_at is skipped, not fatal to the scheduler loop."""
+        now = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+        good = await store.create(
+            "primary", "reminder_pending", "good", due_at="2030-06-01T11:00:00Z"
+        )
+        await store.create(
+            "primary", "reminder_pending", "bad", due_at="whenever"
+        )
+
+        due = await store.list_due(now)
+        assert [t.id for t in due] == [good.id]
+
 
 class TestClose:
     """Test close operation and its side effects."""
