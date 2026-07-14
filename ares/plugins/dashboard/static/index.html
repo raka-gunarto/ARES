@@ -107,6 +107,30 @@ input,textarea{font-family:var(--mono);font-size:13px}
 .section-actions{display:flex;gap:8px;align-items:center}
 
 .empty{color:var(--muted2);font-style:italic;padding:26px;text-align:center}
+
+/* ---- trace ---- */
+.tr-count{color:var(--muted2);font-size:11px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.trace{height:min(66vh,660px);overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:7px}
+.trow{border:1px solid var(--line);border-left:3px solid var(--muted2);border-radius:7px;
+  background:var(--bg);padding:7px 10px}
+.trow.k-event{border-left-color:var(--teal2)}
+.trow.k-reply{border-left-color:var(--amber)}
+.trow.k-tool{border-left-color:var(--burg)}
+.trow.k-final{border-left-color:var(--red)}
+.trow.k-error{border-left-color:var(--red);background:rgba(255,0,0,.06)}
+.tr-hd{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.tr-tag{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.k-event .tr-tag{color:var(--teal2)} .k-reply .tr-tag{color:var(--amber)}
+.k-tool .tr-tag{color:var(--red-soft)} .k-final .tr-tag{color:var(--red)} .k-error .tr-tag{color:var(--red)}
+.tr-ts{font-size:10.5px;color:var(--muted2);font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+.tr-body{margin:5px 0 0;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-size:12px;line-height:1.5;color:var(--txt);max-height:240px;overflow:auto}
+.tr-body.think{color:var(--muted);font-style:italic;border-left:2px solid var(--line2);padding-left:8px}
+.tr-lbl{display:block;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted2);font-style:normal;margin-bottom:2px}
+.tr-tools{margin-top:5px;display:flex;flex-direction:column;gap:4px}
+.tr-call{font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--amber2)}
+.tr-call b{color:var(--amber)} .tr-call code{color:var(--muted);margin-left:6px;word-break:break-all}
+
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:50;
   padding:11px 18px;border-radius:9px;font-size:13px;background:var(--bg3);border:1px solid var(--line2);
   box-shadow:0 8px 30px rgba(0,0,0,.6)}
@@ -246,6 +270,7 @@ function makeApi(token, onUnauth){
     approve:(id)=>req(`/api/privileges/${encodeURIComponent(id)}/approve`,{method:"POST"}).then(r=>r.json()),
     deny:(id)=>req(`/api/privileges/${encodeURIComponent(id)}/deny`,{method:"POST"}).then(r=>r.json()),
     prs:()=>req("/api/prs").then(r=>r.json()),
+    trace:(offset)=>req("/api/trace"+(offset!=null?"?offset="+offset:"")).then(r=>r.json()),
   };
 }
 
@@ -374,8 +399,72 @@ function PRs({api,toast}){
   </div>`;
 }
 
+/* ---------------- trace ---------------- */
+function traceLabel(r){
+  const k=r.kind;
+  if(k==="event") return r.user_initiated?"YOU · "+(r.source||""):"EVENT · "+(r.source||"")+"/"+(r.type||"");
+  if(k==="reply") return r.forced_final?"REPLY (forced)":"REPLY";
+  if(k==="tool") return "TOOL · "+(r.name||"")+(r.ok===false?" ✗":"");
+  if(k==="final") return "FINAL"+(r.spoke?" · spoke":r.notified?" · notified":" · silent");
+  if(k==="error") return "ERROR";
+  return (k||"?").toUpperCase();
+}
+function TraceRow({r}){
+  const t=(r.ts||"").replace("T"," ").replace(/\..*/,"").slice(11);
+  const tcs=(r.tool_calls||[]).filter(x=>x&&x.name);
+  return html`<div class=${"trow k-"+(r.kind||"x")}>
+    <div class="tr-hd"><span class="tr-tag">${traceLabel(r)}</span><span class="tr-ts">${t}</span></div>
+    ${r.kind==="event" && r.text ? html`<pre class="tr-body">${r.text}</pre>`:null}
+    ${r.kind==="reply" && r.thinking ? html`<pre class="tr-body think"><span class="tr-lbl">thinking</span>${r.thinking}</pre>`:null}
+    ${r.kind==="reply" && r.content ? html`<pre class="tr-body">${r.content}</pre>`:null}
+    ${r.kind==="reply" && tcs.length ? html`<div class="tr-tools">${tcs.map((c,i)=>html`<div class="tr-call" key=${i}><b>${c.name}</b>${c.arguments?html`<code>${typeof c.arguments==="string"?c.arguments:JSON.stringify(c.arguments)}</code>`:null}</div>`)}</div>`:null}
+    ${r.kind==="tool" ? html`<pre class="tr-body">${(r.arguments?JSON.stringify(r.arguments):"")}${r.result?("\n→ "+r.result):""}</pre>`:null}
+    ${r.kind==="final" && r.text ? html`<pre class="tr-body">${r.text}</pre>`:null}
+    ${r.kind==="error" && r.error ? html`<pre class="tr-body">${r.error}</pre>`:null}
+  </div>`;
+}
+function Trace({api,toast}){
+  const [rows,setRows]=useState([]);
+  const [live,setLive]=useState(true);
+  const offRef=useRef(null);
+  const boxRef=useRef(null);
+  const stickRef=useRef(true);
+  const liveRef=useRef(true); liveRef.current=live;
+  useEffect(()=>{
+    let alive=true;
+    const tick=async()=>{
+      if(!liveRef.current) return;
+      try{
+        const d=await api.trace(offRef.current);
+        if(!alive) return;
+        offRef.current=d.offset;
+        if(d.records && d.records.length){
+          setRows(r=>{ const n=r.concat(d.records); return n.length>4000?n.slice(n.length-4000):n; });
+        }
+      }catch(e){ /* transient; keep polling */ }
+    };
+    tick(); const id=setInterval(tick,1500);
+    return ()=>{ alive=false; clearInterval(id); };
+  },[]);
+  useEffect(()=>{ if(stickRef.current && boxRef.current){ boxRef.current.scrollTop=boxRef.current.scrollHeight; } });
+  const onScroll=e=>{ const el=e.target; stickRef.current = el.scrollHeight-el.scrollTop-el.clientHeight < 60; };
+  return html`<div class="panel">
+    <div class="panel-hd">Live trace
+      <div class="section-actions">
+        <span class="tr-count">${rows.length} records</span>
+        <button class=${"btn sm "+(live?"primary":"ghost")} onClick=${()=>setLive(v=>!v)}>${live?"● Live":"▮ Paused"}</button>
+        <button class="btn sm ghost" onClick=${()=>{setRows([]);}}>Clear view</button>
+      </div>
+    </div>
+    <div class="trace" ref=${boxRef} onScroll=${onScroll}>
+      ${rows.length===0?html`<div class="empty">Waiting for activity… everything ARES processes appears here as it happens.</div>`:
+        rows.map((r,i)=>html`<${TraceRow} key=${i} r=${r}/>`)}
+    </div>
+  </div>`;
+}
+
 /* ---------------- app ---------------- */
-const TABS=[["chat","Chat"],["memory","Memory"],["tasks","Tasks"],["approvals","Approvals"],["prs","PRs"]];
+const TABS=[["chat","Chat"],["trace","Trace"],["memory","Memory"],["tasks","Tasks"],["approvals","Approvals"],["prs","PRs"]];
 
 function App(){
   const [token,setTok]=useState(()=>localStorage.getItem(TOKEN_KEY)||"");
@@ -449,6 +538,7 @@ function App(){
   }
 
   const panel = tab==="chat"?html`<${Chat} messages=${messages} onSend=${send}/>`
+    : tab==="trace"?html`<${Trace} api=${api} toast=${showToast}/>`
     : tab==="memory"?html`<${Memory} api=${api} toast=${showToast}/>`
     : tab==="tasks"?html`<${Tasks} api=${api} toast=${showToast}/>`
     : tab==="approvals"?html`<${Approvals} api=${api} toast=${showToast} onCount=${setPending}/>`

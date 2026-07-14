@@ -271,3 +271,120 @@ def tasks_stub_instance() -> Any:
             return []
 
     return TasksStub()
+
+
+def _build_trace_app(
+    trace_file: Any,
+    web_channel: WebChannel,
+    memory: FilesystemMemory,
+    tasks_stub: Any,
+    priv_store: PrivStore,
+) -> Any:
+    static_dir = Path(__file__).parent.parent / "ares" / "plugins" / "dashboard" / "static"
+
+    async def emit_chat(text: str) -> None:
+        return None
+
+    return build_app(
+        token=TOKEN,
+        emit_chat=emit_chat,
+        web_channel=web_channel,
+        memory=memory,
+        tasks=tasks_stub,
+        priv_store=priv_store,
+        prs_provider=lambda: [],
+        health_provider=lambda: {"ok": True, "uptime": 0.0, "queue_depths": {}},
+        static_dir=static_dir,
+        trace_file=str(trace_file),
+    )
+
+
+class TestTraceEndpoint:
+    """The live-trace tail endpoint (/api/trace)."""
+
+    async def _client(self, app: Any) -> httpx.AsyncClient:
+        transport = httpx.ASGITransport(app=app)
+        return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    async def test_trace_requires_auth(
+        self, tmp_path: Path, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        p = tmp_path / "trace.jsonl"
+        p.write_text('{"kind":"event"}\n')
+        app = _build_trace_app(p, web_channel, memory, tasks_stub, priv_store)
+        async with await self._client(app) as c:
+            resp = await c.get("/api/trace")
+            assert resp.status_code == 401
+
+    async def test_trace_returns_records_and_offset(
+        self, tmp_path: Path, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        p = tmp_path / "trace.jsonl"
+        p.write_text(
+            '{"kind":"event","event_id":"e1","text":"hi"}\n'
+            '{"kind":"reply","event_id":"e1","content":"yo"}\n'
+        )
+        app = _build_trace_app(p, web_channel, memory, tasks_stub, priv_store)
+        async with await self._client(app) as c:
+            resp = await c.get("/api/trace", headers={"Authorization": f"Bearer {TOKEN}"})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["available"] is True
+            assert [r["kind"] for r in data["records"]] == ["event", "reply"]
+            assert data["offset"] == p.stat().st_size
+
+    async def test_trace_incremental_offset(
+        self, tmp_path: Path, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        p = tmp_path / "trace.jsonl"
+        p.write_text('{"kind":"event","event_id":"e1"}\n')
+        app = _build_trace_app(p, web_channel, memory, tasks_stub, priv_store)
+        async with await self._client(app) as c:
+            first = (
+                await c.get("/api/trace", headers={"Authorization": f"Bearer {TOKEN}"})
+            ).json()
+            off = first["offset"]
+            # No new data yet.
+            second = (
+                await c.get(
+                    f"/api/trace?offset={off}",
+                    headers={"Authorization": f"Bearer {TOKEN}"},
+                )
+            ).json()
+            assert second["records"] == []
+            # Append a record; the same offset now yields exactly it.
+            with open(p, "a") as f:
+                f.write('{"kind":"final","event_id":"e1","text":"done"}\n')
+            third = (
+                await c.get(
+                    f"/api/trace?offset={off}",
+                    headers={"Authorization": f"Bearer {TOKEN}"},
+                )
+            ).json()
+            assert [r["kind"] for r in third["records"]] == ["final"]
+
+    async def test_trace_rotation_flag_when_offset_past_eof(
+        self, tmp_path: Path, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        p = tmp_path / "trace.jsonl"
+        p.write_text('{"kind":"event","event_id":"e1"}\n')
+        app = _build_trace_app(p, web_channel, memory, tasks_stub, priv_store)
+        async with await self._client(app) as c:
+            resp = await c.get(
+                "/api/trace?offset=999999",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+            data = resp.json()
+            assert data["rotated"] is True
+
+    async def test_trace_missing_file_degrades(
+        self, tmp_path: Path, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        p = tmp_path / "does-not-exist.jsonl"
+        app = _build_trace_app(p, web_channel, memory, tasks_stub, priv_store)
+        async with await self._client(app) as c:
+            resp = await c.get("/api/trace", headers={"Authorization": f"Bearer {TOKEN}"})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["available"] is False
+            assert data["records"] == []

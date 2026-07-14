@@ -54,6 +54,7 @@ class DashboardSource(BaseSource):
         tasks: Any,
         priv_store: Any,
         prs_provider: Any = None,
+        trace_file: Any = None,
     ) -> None:
         """Initialize the dashboard source.
 
@@ -99,6 +100,9 @@ class DashboardSource(BaseSource):
         # Zero-arg callable returning the list of open self-edit PRs (§18 cache);
         # defaults to an empty list when self-edit is disabled.
         self.prs_provider = prs_provider if prs_provider is not None else (lambda: [])
+        # Path to the live activity-trace file (rotating JSONL), or None when
+        # tracing is disabled; the /api/trace endpoint tails it.
+        self.trace_file = trace_file
 
         self._start_time: float | None = None
         self._server: "uvicorn.Server | None" = None
@@ -158,6 +162,7 @@ class DashboardSource(BaseSource):
             prs_provider=self.prs_provider,
             health_provider=self._health_provider,
             static_dir=static_dir,
+            trace_file=self.trace_file,
         )
 
         config = uvicorn.Config(

@@ -64,6 +64,7 @@ from pathlib import Path
 
 from ares.core.agent import Agent
 from ares.core.config import enforce_prod_tripwires, load_config
+from ares.core.trace import Tracer
 from ares.core.critical import CriticalHandlerRegistry
 from ares.core.dispatcher import Dispatcher
 from ares.core.event import Event, EventBus, Priority
@@ -343,12 +344,23 @@ async def main(config_path: str) -> None:
         priv_source = PrivilegeSource(bus, priv_config, priv_store)
         sources.append(priv_source)
 
+    tracer = Tracer(
+        config.trace.path,
+        max_bytes=config.trace.max_mb * 1024 * 1024,
+        backups=config.trace.backups,
+        enabled=config.trace.enabled,
+    )
+    trace_file = str(tracer.path) if tracer.enabled else None
+
     dash_config = config.plugins.get("dashboard", {})
     if dash_config.get("enabled"):
         web_channel = WebChannel()
         router.register(web_channel)
         sources.append(
-            DashboardSource(bus, dash_config, web_channel, memory, tasks, priv_store, pr_cache.all)
+            DashboardSource(
+                bus, dash_config, web_channel, memory, tasks, priv_store,
+                pr_cache.all, trace_file,
+            )
         )
 
     agent = Agent(
@@ -361,6 +373,7 @@ async def main(config_path: str) -> None:
         services=services,
         persona=config.persona,
         max_tool_iterations=config.llm.max_tool_iterations,
+        tracer=tracer,
     )
     dispatcher = Dispatcher(bus, agent, critical)
 
