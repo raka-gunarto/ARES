@@ -1,12 +1,24 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.2. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.3. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3. ***
+
+v1.3 (operator-authorised spec change) done: added the `read_source` self-inspection tool
+(§18). Read-only, daemon-side, scoped to the source root (derived from the running `ares`
+package -> `/opt/ares/app` in prod, repo in dev). Reads a file (UTF-8, 256 KiB cap with an
+explicit truncation marker) or lists a directory (build noise omitted); rejects absolute /
+`.`/`..` / symlink-escape paths and never lists or reads the `.env*` secrets (`.env.example`
+stays readable). Surfaces the daemon's EXISTING RO access to its own source — grants no new
+privilege, no write path. Closes the gap that stopped ARES opening a comment-change self-edit
+PR (it had `open_pr` but no way to read a file to base the edit on). `build_selfedit_tools`
+now returns 3 tools; `main.py` wiring unchanged (iterates the list). Full suite: 244 passed,
+1 skipped (shellcheck, Docker-covered). NB: unit files aren't carried by the updater, but
+this is pure `ares` code (`selfedit_tools.py`) so a merged PR auto-deploys via the updater.
 
 PATCH-2 (sbx-runner) done: `deploy/sbx-runner` is the sole sudo entry point ares->ares-sbx,
 installed to /usr/local/sbin (outside the self-edit surface), env-scrubbing; shell_tools prod
@@ -253,6 +265,15 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-07-14 (v1.3): operator authorised adding `read_source` to the frozen tool inventory
+  (§18) after ARES could not open a comment-change self-edit PR — `open_pr` needs full file
+  content and nothing exposed the daemon's read access to its own source. Chosen shape:
+  daemon-side (not the `ares-sbx` sandbox, which can't read `/opt/ares/app` — 0750, wrong
+  group), read-only, root derived from the running `ares` package (never configured, so the
+  model can't repoint it). Same repo-relative path space as `open_pr` so a read can be
+  round-tripped into an edit. Secrets guard: `.env*` never listed/read (except `.env.example`),
+  and resolved paths are re-checked to stay in-root so a symlink can't escape. It exposes an
+  existing OS capability to the model, not a new one — no write path, no privilege change.
 - 2026-07-12 (v1.2): PATCH-1 applied — prompt-layer injection defenses retrofitted into
   completed M2 per change request; M2 history left intact (items stay ticked, new PATCH-1
   section appended). RULES lives as a fixed constant in prompt.py, never sourced from or

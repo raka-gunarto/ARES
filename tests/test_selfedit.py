@@ -7,15 +7,18 @@ main), the happy path (branch ref + PR created, cached), and get_pr_status.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from ares.plugins.tools.selfedit_tools import (
     PRCache,
+    ReadSource,
     build_selfedit_tools,
 )
 
 
 def _tools(cache: PRCache):
     config = {"github_repo": "owner/repo", "github_token": "ghp-secret", "base_branch": "main"}
-    open_pr, get_status = build_selfedit_tools(config, cache)
+    _read_source, open_pr, get_status = build_selfedit_tools(config, cache)
     return open_pr, get_status
 
 
@@ -127,3 +130,83 @@ async def test_get_pr_status_merged():
     r = await get_status.run(None, number=11)
     assert r.ok is True and "merged" in r.content
     assert cache.all()[0]["state"] == "merged"
+
+
+# --- read_source (v1.3): read-only, scoped self-inspection ---
+
+
+def _src_tree(tmp_path: Path) -> Path:
+    """A small fake source tree rooted at tmp_path (stand-in for /opt/ares/app)."""
+    (tmp_path / "ares" / "core").mkdir(parents=True)
+    (tmp_path / "ares" / "core" / "agent.py").write_text("# agent\nX = 1\n")
+    (tmp_path / "ares" / "__pycache__").mkdir()
+    (tmp_path / "ares" / "__pycache__" / "junk.pyc").write_bytes(b"\x00")
+    (tmp_path / "instance").mkdir()
+    (tmp_path / "instance" / ".env").write_text("GITHUB_TOKEN=supersecret\n")
+    (tmp_path / "instance" / ".env.example").write_text("GITHUB_TOKEN=\n")
+    return tmp_path
+
+
+async def test_read_source_reads_a_file(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    r = await rs.run(None, path="ares/core/agent.py")
+    assert r.ok is True and r.content == "# agent\nX = 1\n"
+
+
+async def test_read_source_lists_a_directory_skipping_noise(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    r = await rs.run(None, path="ares")
+    assert r.ok is True
+    assert "core/" in r.content  # dirs flagged with a trailing slash
+    assert "__pycache__" not in r.content  # build noise omitted
+
+
+async def test_read_source_root_listing_on_empty_path(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    r = await rs.run(None, path="")
+    assert r.ok is True and "ares/" in r.content and "instance/" in r.content
+
+
+async def test_read_source_never_reads_secrets(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    r = await rs.run(None, path="instance/.env")
+    assert r.ok is False and "supersecret" not in r.content
+    # ...and the secret is omitted from a directory listing, but the template stays.
+    listing = await rs.run(None, path="instance")
+    assert ".env.example" in listing.content and "\n  .env\n" not in listing.content + "\n"
+
+
+async def test_read_source_env_example_is_readable(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    r = await rs.run(None, path="instance/.env.example")
+    assert r.ok is True and r.content == "GITHUB_TOKEN=\n"
+
+
+async def test_read_source_rejects_absolute_and_traversal(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    assert (await rs.run(None, path="/etc/passwd")).ok is False
+    r = await rs.run(None, path="../../etc/passwd")
+    assert r.ok is False and ".." in r.content
+
+
+async def test_read_source_rejects_symlink_escape(tmp_path):
+    root = _src_tree(tmp_path)
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("leaked\n")
+    (root / "ares" / "link.txt").symlink_to(outside)
+    r = await ReadSource(root=root).run(None, path="ares/link.txt")
+    assert r.ok is False and "leaked" not in r.content
+
+
+async def test_read_source_missing_path(tmp_path):
+    rs = ReadSource(root=_src_tree(tmp_path))
+    r = await rs.run(None, path="ares/nope.py")
+    assert r.ok is False and "no such" in r.content.lower()
+
+
+async def test_read_source_truncates_large_file(tmp_path):
+    root = _src_tree(tmp_path)
+    (root / "big.txt").write_text("a" * 5000)
+    r = await ReadSource(root=root, max_bytes=1000).run(None, path="big.txt")
+    assert r.ok is True and "truncated" in r.content and "INCOMPLETE" in r.content
+    assert r.content.startswith("a" * 1000) and not r.content.startswith("a" * 1001)

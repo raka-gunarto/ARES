@@ -16,15 +16,43 @@ The operator merging the PR on GitHub remains the sole path to running code.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 import httpx
 
+import ares
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 from ares.core.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 GITHUB_API = "https://api.github.com"
+
+# Read cap: the largest source file in the tree is ~43 KiB, so 256 KiB round-trips
+# any real source file whole while bounding what a single read can dump into context.
+READ_SOURCE_MAX_BYTES = 256 * 1024
+# Build/cache noise omitted from directory listings (not secrets — just clutter).
+_LISTING_NOISE = frozenset(
+    {"__pycache__", ".git", ".venv", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
+)
+
+
+def _source_root() -> Path:
+    """The root of ARES's own source tree, derived from the running `ares` package.
+
+    `<root>/ares/__init__.py` -> parents[1] == `<root>`: `/opt/ares/app` in prod
+    (following the release symlink), the repo checkout in dev. Never configured, so
+    the model cannot point self-inspection at an arbitrary tree.
+    """
+    return Path(ares.__file__).resolve().parents[1]
+
+
+def _is_secret_name(name: str) -> bool:
+    """True for the secrets dotenv and its variants; the `.env.example` template is not.
+
+    Secrets come only from the environment (§14.2); `read_source` never exposes them.
+    """
+    return name.startswith(".env") and name != ".env.example"
 
 
 class PRCache:
@@ -59,6 +87,94 @@ def _validate_path(raw_path: str) -> str | None:
     if ".." in parts or "." in parts:
         return f"error: path '{raw_path}' must not contain '.' or '..' segments"
     return None
+
+
+class ReadSource(BaseTool):
+    """Read ARES's own source (read-only) so it can reason about a change (§18).
+
+    Daemon-side and read-only: it surfaces the `ares` user's existing RO access to
+    `/opt/ares/app` (§14.2) to the model. Scoped to the source root, refuses to
+    leave it (even via symlink), and never reads the secrets file.
+    """
+
+    name = "read_source"
+    description = (
+        "Read ARES's own source code (read-only self-inspection) so it can reason "
+        "about what to change before proposing an edit with open_pr. Takes a "
+        "repo-relative path: a file returns its contents, a directory returns a "
+        "listing. Cannot read outside the source tree and never exposes secrets."
+    )
+    keywords = ("read", "source", "code", "inspect", "view", "file", "list", "self", "own")
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "repo-relative path; empty or '.' lists the source root",
+            }
+        },
+    }
+    core = False
+
+    def __init__(self, root: Path | None = None, max_bytes: int = READ_SOURCE_MAX_BYTES) -> None:
+        """Pin the source root (default: derived from the running `ares` package)."""
+        self._root = (root if root is not None else _source_root()).resolve()
+        self._max_bytes = max_bytes
+
+    async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
+        """Read a file or list a directory within the source tree (§18)."""
+        raw = (kwargs.get("path") or "").strip()
+        rel = raw.strip("/")
+        if rel == ".":
+            rel = ""
+
+        if rel:
+            parts = rel.split("/")
+            if ".." in parts or "." in parts:
+                return ToolResult(
+                    False, f"error: path '{raw}' must not contain '.' or '..' segments"
+                )
+            if any(_is_secret_name(p) for p in parts):
+                return ToolResult(
+                    False, f"error: path '{raw}' is not readable (secrets are never exposed)"
+                )
+
+        target = (self._root / rel).resolve() if rel else self._root
+        # Defense in depth: after following symlinks the target must stay in-root.
+        if target != self._root and self._root not in target.parents:
+            return ToolResult(False, f"error: path '{raw}' escapes the source tree")
+        if not target.exists():
+            return ToolResult(False, f"error: no such source path '{raw or '.'}'")
+
+        if target.is_dir():
+            return self._list_dir(target, rel)
+        return self._read_file(target, raw)
+
+    def _list_dir(self, target: Path, rel: str) -> ToolResult:
+        """Return a sorted listing, dirs flagged with '/', noise and secrets omitted."""
+        entries: list[str] = []
+        for child in sorted(target.iterdir(), key=lambda p: p.name):
+            if child.name in _LISTING_NOISE or _is_secret_name(child.name):
+                continue
+            entries.append(child.name + ("/" if child.is_dir() else ""))
+        label = rel or "."
+        if not entries:
+            return ToolResult(True, f"{label}/ (empty)")
+        return ToolResult(True, f"{label}/\n" + "\n".join(f"  {e}" for e in entries))
+
+    def _read_file(self, target: Path, raw: str) -> ToolResult:
+        """Return file contents (UTF-8, capped), marking truncation explicitly."""
+        try:
+            data = target.read_bytes()
+        except OSError as e:
+            return ToolResult(False, f"error: cannot read '{raw}': {e}")
+        text = data[: self._max_bytes].decode("utf-8", errors="replace")
+        if len(data) > self._max_bytes:
+            text += (
+                f"\n\n[... truncated at {self._max_bytes} of {len(data)} bytes; "
+                "content is INCOMPLETE — do not feed this back into open_pr]"
+            )
+        return ToolResult(True, text)
 
 
 class OpenPR(BaseTool):
@@ -312,6 +428,7 @@ def build_selfedit_tools(config: dict, cache: PRCache) -> list[BaseTool]:
     github_token = config.get("github_token", "")
     base_branch = config.get("base_branch", "main")
     return [
+        ReadSource(),
         OpenPR(github_repo, github_token, base_branch, cache),
         GetPRStatus(github_repo, github_token, cache),
     ]

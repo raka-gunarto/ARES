@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.2
+# ARES — Implementation Specification v1.3
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -14,6 +14,13 @@ v1.2 hardens the runtime system prompt against injection from tool/memory/
 external content (§4.11 carries the fixed RULES block; annotated version in
 ARES-SYSTEM-PROMPT.md) and adds the `websockets` dependency (§12) that makes the
 Home Assistant live event transport (§7.3) implementable.
+
+v1.3 adds the `read_source` self-inspection tool (§18): a read-only, daemon-side
+tool that lets ARES read its own source in the same repo-relative path space
+`open_pr` writes, so it can reason about what to change before proposing an edit.
+It surfaces the daemon's *existing* read-only access to `/opt/ares/app` (§14.2)
+to the model — it grants no new privilege, never leaves the source tree, and
+never reads the secrets file. No new dependency.
 
 ---
 
@@ -223,7 +230,7 @@ ares/
         time_tools.py
         comms_tools.py
         shell_tools.py   # run_shell (sandboxed)                        §15
-        selfedit_tools.py# open_pr, get_pr_status                       §18
+        selfedit_tools.py# read_source, open_pr, get_pr_status          §18
       privileges/
         __init__.py
         store.py         # PrivStore (aiosqlite)                        §16
@@ -1250,6 +1257,10 @@ and never assumes more privilege than it has.
 - Self-edit → **API-only from the daemon** (GitHub Git-Data API); no local
   clone, no sandbox, token never on disk. Produces a PR on a new branch; never
   writes `/opt/ares` and never pushes the base branch. §18.
+- Self-inspection (`read_source`, §18) reads that same `/opt/ares/app` tree
+  **read-only**, scoped to the source root, never following a symlink out and
+  never touching the secrets file. It exposes the daemon's existing RO access to
+  the model — no new privilege, no write path.
 - System changes (package installs, unit changes) → only via the privilege
   queue → broker, human-approved. ARES itself has no sudo. §16.
 
@@ -1453,7 +1464,34 @@ localStorage, per artifact storage rules don't apply here but keep it simple).
 ARES can propose changes to its own code. It can never merge them. The gate is
 the operator reviewing and merging the PR on GitHub.
 
-Two discoverable tools:
+Three discoverable tools:
+
+```
+read_source(path: string) -> ToolResult
+  keywords: read, source, code, inspect, view, file, list, self, own
+```
+
+Behaviour (v1.3 — read-only self-inspection, entirely daemon-side; the `ares`
+user already holds read-only access to `/opt/ares/app`, §14.2, so this exposes an
+existing capability to the model and grants no new privilege):
+
+1. `path` is **repo-relative** — the same path space `open_pr` writes, so ARES
+   can read a file, reason about it, and round-trip a modified copy through
+   `open_pr`. Empty / `.` / `/` mean the source root.
+2. The source root is derived from the running `ares` package
+   (`/opt/ares/app` in prod, the repo checkout in dev) — never configured.
+3. A **file** returns its contents (UTF-8, decoded with replacement), capped at
+   256 KiB. A truncated read is marked explicitly and its content must never be
+   fed back into `open_pr` (it would silently drop the tail).
+4. A **directory** returns a sorted listing (directories flagged with a trailing
+   `/`); build noise (`__pycache__`, `.git`, `.venv`, cache dirs) is omitted.
+5. Rejected before any read: absolute paths, any `.`/`..` segment, and any path
+   that resolves (symlinks followed, then re-checked) **outside** the source
+   tree → `ok=False`.
+6. The secrets dotenv (`.env` and any `.env*` variant except `.env.example`) is
+   **never listed or read** — secrets come only from the environment (§14.2).
+   `config.yaml` carries only `!secret` *references*, not values, so it stays
+   readable.
 
 ```
 open_pr(branch: string, title: string, body: string,
