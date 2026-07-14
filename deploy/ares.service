@@ -21,7 +21,14 @@ RestartSec=5
 # run_shell (§15); it still has no sudo of its own.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/ares
-ProtectHome=true
+# §14.2 requires the daemon to "traverse in to spawn processes as ares-sbx via
+# the runner". ProtectHome=true would hide ALL of /home from the unit's process
+# tree — including the sudo->ares-sbx runner, which then dies on
+# `cd /home/ares-sbx: Permission denied`. So hide other homes with a tmpfs but
+# bind the sandbox's own home back in (rw for its scratch clone). File perms
+# still bar the ares user from writing it (0755 ares-sbx, scratch 0700).
+ProtectHome=tmpfs
+BindPaths=/home/ares-sbx
 PrivateTmp=true
 
 [Install]

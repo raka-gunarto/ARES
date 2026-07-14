@@ -125,9 +125,11 @@ Three long-running services (unit files shipped in `deploy/`):
   why the daemon has the secret *values* but cannot read the secret *file*.
 - `ExecStart=/opt/ares/venv/bin/python -m instance.main /etc/ares/config.yaml`
 - Hardening: `NoNewPrivileges=true`, `ProtectSystem=strict`,
-  `ReadWritePaths=/var/lib/ares`, `ProtectHome=true`,
-  `PrivateTmp=true`. (The provisioner sets these; they enforce the FS contract
-  at the kernel level, not just by permissions.)
+  `ReadWritePaths=/var/lib/ares`, `ProtectHome=tmpfs` with
+  `BindPaths=/home/ares-sbx` (hides other homes but lets the runner traverse
+  into the sandbox home per §14.2), `PrivateTmp=true`. (The provisioner sets
+  these; they enforce the FS contract at the kernel level, not just by
+  permissions.)
 - `Restart=always`.
 
 **`ares-broker.service`** — the root broker.
