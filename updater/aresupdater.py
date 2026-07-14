@@ -190,6 +190,13 @@ def swap_symlink(app_dir: str, release_path: str) -> None:
     if os.path.lexists(tmp_link):
         os.remove(tmp_link)
     os.symlink(release_path, tmp_link)
+    # Bootstrap: the first deploy finds `app_dir` as the provisioned real
+    # directory, not a symlink. os.replace() cannot rename a symlink over a
+    # populated directory (raises IsADirectoryError), so move that initial tree
+    # aside once. Every deploy after this swaps symlink-over-symlink, which is a
+    # single atomic rename (a reader never sees a half-updated link).
+    if os.path.isdir(app_dir) and not os.path.islink(app_dir):
+        os.rename(app_dir, f"{app_dir}.bootstrap-{int(time.time())}")
     os.replace(tmp_link, app_dir)
 
 
