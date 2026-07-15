@@ -54,6 +54,30 @@ DEFAULT_BLOCKED_CONTROLS = (
     "alarm_control_panel.alarm_disarm",
 )
 
+# Default attribute keys included in snapshot and tool output.
+_DEFAULT_SNAPSHOT_ATTRS = (
+    "friendly_name",
+    "temperature",
+    "humidity",
+    "brightness",
+    "current_temperature",
+    "battery_level",
+    "state_class",
+)
+
+
+def _format_entity_line(
+    entity_id: str, state: str, attrs: dict, attr_keys: tuple[str, ...]
+) -> str:
+    """Format one entity line as 'entity_id: state [k=v, ...]' with matching attrs."""
+    parts = []
+    for k in attr_keys:
+        if k in attrs:
+            v = attrs[k]
+            parts.append(f"{k}={v}")
+    suffix = f" [{', '.join(parts)}]" if parts else ""
+    return f"{entity_id}: {state}{suffix}"
+
 
 class HAService:
     """REST client for Home Assistant, placed in services["home_assistant"]."""
@@ -64,6 +88,7 @@ class HAService:
         token: str,
         allowed_domains: list[str],
         blocked_controls: list[str] | None = None,
+        snapshot_attrs: tuple[str, ...] = _DEFAULT_SNAPSHOT_ATTRS,
     ) -> None:
         """Initialize the service.
 
@@ -73,6 +98,7 @@ class HAService:
             allowed_domains: Domains fetched by snapshot_summary().
             blocked_controls: `domain.service` pairs that LLM-initiated
                 control_device must refuse (default: doors/alarm disarm).
+            snapshot_attrs: Attribute keys to include in snapshot and tool output.
         """
         self.rest_url = rest_url.rstrip("/")
         self.token = token
@@ -80,6 +106,7 @@ class HAService:
         self.blocked_controls = frozenset(
             blocked_controls if blocked_controls is not None else DEFAULT_BLOCKED_CONTROLS
         )
+        self.snapshot_attrs = snapshot_attrs
         self._client = httpx.AsyncClient(timeout=10.0)
         self._snap_cache: str | None = None
         self._snap_ts: float = 0.0
@@ -125,7 +152,7 @@ class HAService:
         return resp.json()
 
     async def snapshot_summary(self) -> str:
-        """Return a cached "entity: state" summary, rebuilt at most every 30s."""
+        """Return a cached summary with key attributes, rebuilt at most every 30s."""
         now = time.monotonic()
         if self._snap_cache is not None and (now - self._snap_ts) < _SNAPSHOT_TTL:
             return self._snap_cache
@@ -134,7 +161,10 @@ class HAService:
         for domain in self.allowed_domains:
             states = await self.get_states(domain)
             for s in states:
-                lines.append(f"{s.get('entity_id')}: {s.get('state')}")
+                eid = s.get("entity_id", "")
+                state = s.get("state", "unknown")
+                attrs = s.get("attributes", {})
+                lines.append(_format_entity_line(eid, state, attrs, self.snapshot_attrs))
         summary = "\n".join(lines)
         self._snap_cache = summary
         self._snap_ts = now

@@ -50,26 +50,35 @@ class GetHomeState(BaseTool):
                 if state_obj is None:
                     return ToolResult(True, f"Entity {entity_id} not found.")
 
-                # Format state with key attributes
+                # Format state with all configured snapshot attributes
                 state_str = state_obj.get("state", "unknown")
                 attrs = state_obj.get("attributes", {})
                 lines = [f"{entity_id}: {state_str}"]
 
-                # Add key attributes
-                for key in ["friendly_name", "temperature", "humidity", "brightness"]:
+                # Use the same configured attr keys as snapshot_summary
+                attr_keys = getattr(svc, "snapshot_attrs", ())
+                for key in attr_keys:
                     if key in attrs:
                         lines.append(f"  {key}: {attrs[key]}")
 
                 return ToolResult(True, "\n".join(lines))
 
             elif domain:
-                # Get all entities in domain, capped at 50 lines
+                # Get all entities in domain with attributes, capped at 50 lines
                 states = await svc.get_states(domain)
+                attr_keys = getattr(svc, "snapshot_attrs", ())
                 lines = []
                 for state_obj in states[:50]:
                     eid = state_obj.get("entity_id", "unknown")
                     state = state_obj.get("state", "unknown")
-                    lines.append(f"{eid}: {state}")
+                    attrs = state_obj.get("attributes", {})
+                    parts = []
+                    for k in attr_keys:
+                        if k in attrs:
+                            v = attrs[k]
+                            parts.append(f"{k}={v}")
+                    suffix = f" [{', '.join(parts)}]" if parts else ""
+                    lines.append(f"{eid}: {state}{suffix}")
 
                 content = "\n".join(lines)
                 if len(states) > 50:
