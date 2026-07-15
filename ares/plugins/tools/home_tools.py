@@ -16,7 +16,10 @@ class GetHomeState(BaseTool):
         "Get the current state of a Home Assistant entity, all entities in a domain, "
         "or a filtered summary of all devices. "
         "Provide entity_id to check a single device, domain to list all devices in that domain, "
-        "or neither for a summary snapshot."
+        "or neither for a summary snapshot. "
+        "By default a common set of attributes is shown (friendly_name, temperature, "
+        "humidity, brightness, battery_level, ...). Pass `attributes` to choose exactly "
+        "which attribute keys to show for this call, or ['*'] to show every attribute."
     )
     keywords = ("home", "state", "status", "temperature", "light", "door", "sensor", "house")
     parameters = {
@@ -30,6 +33,16 @@ class GetHomeState(BaseTool):
                 "type": "string",
                 "description": "The domain to list (e.g., 'light', 'climate', 'sensor')",
             },
+            "attributes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional attribute keys to show for each entity, overriding the "
+                    "default set for this call (e.g. ['temperature','hvac_action']). "
+                    "Use ['*'] to include every attribute an entity has. Omit to use "
+                    "the defaults."
+                ),
+            },
         },
     }
     core = False
@@ -42,6 +55,16 @@ class GetHomeState(BaseTool):
 
         entity_id = kwargs.get("entity_id")
         domain = kwargs.get("domain")
+        override = kwargs.get("attributes")
+
+        def attr_keys_for(entity_attrs: dict) -> list:
+            """Keys to show for one entity: the LLM's override (or ['*'] = all),
+            else the service default (`snapshot_attrs`). No config needed."""
+            if override:
+                if "*" in override:
+                    return list(entity_attrs.keys())
+                return [str(k) for k in override]
+            return list(getattr(svc, "snapshot_attrs", ()))
 
         try:
             if entity_id:
@@ -50,14 +73,12 @@ class GetHomeState(BaseTool):
                 if state_obj is None:
                     return ToolResult(True, f"Entity {entity_id} not found.")
 
-                # Format state with all configured snapshot attributes
+                # Format state with the selected attributes (override or default)
                 state_str = state_obj.get("state", "unknown")
                 attrs = state_obj.get("attributes", {})
                 lines = [f"{entity_id}: {state_str}"]
 
-                # Use the same configured attr keys as snapshot_summary
-                attr_keys = getattr(svc, "snapshot_attrs", ())
-                for key in attr_keys:
+                for key in attr_keys_for(attrs):
                     if key in attrs:
                         lines.append(f"  {key}: {attrs[key]}")
 
@@ -66,14 +87,13 @@ class GetHomeState(BaseTool):
             elif domain:
                 # Get all entities in domain with attributes, capped at 50 lines
                 states = await svc.get_states(domain)
-                attr_keys = getattr(svc, "snapshot_attrs", ())
                 lines = []
                 for state_obj in states[:50]:
                     eid = state_obj.get("entity_id", "unknown")
                     state = state_obj.get("state", "unknown")
                     attrs = state_obj.get("attributes", {})
                     parts = []
-                    for k in attr_keys:
+                    for k in attr_keys_for(attrs):
                         if k in attrs:
                             v = attrs[k]
                             parts.append(f"{k}={v}")
