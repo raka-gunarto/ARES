@@ -91,6 +91,11 @@ plugins:
     username: ares
     password: !secret SIP_PASSWORD
     greeting: "ARES. Go ahead."
+    # In-call turn-taking is silence-driven (§7.5): a turn ends after
+    # silence_seconds of continuous quiet once you've spoken. record_seconds is
+    # only the hard cap if you never stop (or never start) talking.
+    silence_seconds: 1.0
+    silence_rms_threshold: 500
   time_tools:
     enabled: true
     latitude: 51.32

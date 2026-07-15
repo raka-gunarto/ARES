@@ -16,9 +16,11 @@ runs when the extras are present.
 """
 from __future__ import annotations
 
+import array
 import asyncio
 import concurrent.futures
 import contextlib
+import sys
 import tempfile
 import threading
 import time
@@ -121,6 +123,8 @@ class SIPService:
         record_seconds: int = 8,
         port: int = 0,
         answer_settle_seconds: float = 1.2,
+        silence_seconds: float = 1.0,
+        silence_rms_threshold: int = 500,
     ) -> None:
         """Initialize the SIP service.
 
@@ -131,14 +135,24 @@ class SIPService:
             greeting: spoken when answering an incoming call.
             piper_model: path to a Piper `.onnx` voice (TTS). Empty disables TTS.
             whisper_model: faster-whisper model size for call STT.
-            record_seconds: per-utterance record window for in-call STT (§7.5
-                allows a configured timeout in place of live VAD endpointing).
+            record_seconds: HARD CAP on one in-call utterance (§7.5). Endpointing
+                is silence-driven (see `silence_seconds`); this is only the safety
+                ceiling that ends recording if the caller never stops talking (or
+                never starts). Not a fixed wait — a normal utterance ends ~
+                `silence_seconds` after the caller falls quiet.
             port: local SIP UDP port (0 = any).
             answer_settle_seconds: pause after an outbound call's media goes
                 active, before speaking. A mobile softphone over ZeroTier needs a
                 moment to prime its audio output / jitter buffer after answering;
                 speaking immediately loses the opening — the whole message if it
                 is short — so the callee hears silence.
+            silence_seconds: end an in-call utterance after this much *continuous*
+                trailing silence, once speech has been heard (spec §7.5's "record
+                until silence" — the spec baseline is 700 ms). This is the reply
+                latency the caller feels after they stop talking.
+            silence_rms_threshold: PCM RMS level (16-bit, 0..32767) below which a
+                frame counts as silence. Raise it in a noisy room, lower it if
+                quiet speech is being clipped.
 
         Raises:
             RuntimeError: if the `sip` extra (pjsua2) is not installed.
@@ -158,6 +172,8 @@ class SIPService:
         self.record_seconds = record_seconds
         self.port = port
         self.answer_settle_seconds = answer_settle_seconds
+        self.silence_seconds = silence_seconds
+        self.silence_rms_threshold = silence_rms_threshold
 
         self._on_call: Callable[[str], None] | None = None
         self._on_message: Callable[[str, str], None] | None = None
@@ -364,11 +380,67 @@ class SIPService:
         recorder = pj.AudioMediaRecorder()
         recorder.createRecorder(wav)
         media.startTransmit(recorder)
-        time.sleep(self.record_seconds)
-        with contextlib.suppress(Exception):
-            media.stopTransmit(recorder)
-        del recorder  # flush + close the WAV
+        try:
+            self._wait_for_utterance(call, wav)
+        finally:
+            with contextlib.suppress(Exception):
+                media.stopTransmit(recorder)
+            del recorder  # flush + close the WAV
         return Path(wav).exists() and Path(wav).stat().st_size > 44
+
+    def _wait_for_utterance(self, call, wav: str) -> None:
+        """Block until the caller has finished speaking (spec §7.5 endpointing).
+
+        Tails the WAV the PJSIP recorder is writing (no live sample streaming —
+        we only read the temp file, per §7.5) and measures RMS energy on each
+        newly-written slice. Returns after `silence_seconds` of *continuous*
+        silence once speech has been heard, or at the `record_seconds` hard cap,
+        or immediately if the call drops — whichever comes first. Silence before
+        the caller says anything does not count, so an opening pause never ends
+        the turn early.
+        """
+        poll = 0.1
+        deadline = time.monotonic() + self.record_seconds
+        data_offset: int | None = None
+        cursor = 0
+        speech_seen = False
+        silence_run = 0.0
+
+        while time.monotonic() < deadline:
+            if call.disconnected.is_set():
+                return
+            time.sleep(poll)
+
+            if data_offset is None:
+                # The recorder writes the header up front, but the file may be
+                # mid-flush; wait for a parseable 'data' chunk before measuring.
+                data_offset = _wav_data_offset(wav)
+                if data_offset is None:
+                    continue
+                cursor = data_offset
+
+            try:
+                size = Path(wav).stat().st_size
+            except OSError:
+                continue
+
+            level = 0.0
+            if size > cursor:
+                with open(wav, "rb") as fh:
+                    fh.seek(cursor)
+                    chunk = fh.read(size - cursor)
+                n = len(chunk) - (len(chunk) % 2)  # whole 16-bit samples only
+                if n:
+                    cursor += n
+                    level = _rms_int16(chunk[:n])
+
+            if level >= self.silence_rms_threshold:
+                speech_seen = True
+                silence_run = 0.0
+            elif speech_seen:
+                silence_run += poll
+                if silence_run >= self.silence_seconds:
+                    return
 
     def _transcribe(self, wav: str) -> str | None:
         if self._stt is None:
@@ -438,3 +510,51 @@ def _wav_duration(path: str) -> float:
             return frames / float(rate)
     except Exception:
         return 0.0
+
+
+def _rms_int16(raw: bytes) -> float:
+    """RMS level of little-endian signed 16-bit PCM (0.0 if empty).
+
+    Stdlib only (no numpy/audioop, so it works on any Python and without the
+    voice extra). WAV PCM is little-endian; byteswap on a big-endian host.
+    """
+    n = len(raw) - (len(raw) % 2)
+    if n < 2:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(raw[:n])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    total = 0
+    for s in samples:
+        total += s * s
+    return (total / len(samples)) ** 0.5
+
+
+def _wav_data_offset(path: str) -> int | None:
+    """Byte offset of the PCM payload in a (possibly still-growing) WAV file.
+
+    Walks the RIFF chunk list to find `data` and returns the offset just past
+    its 8-byte header. The recorder writes a placeholder `data` length that is
+    only finalised on close, but the header's *position* is fixed from the
+    start, so this is stable mid-recording. Returns None if the header is not
+    yet complete/parseable.
+    """
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(12)
+            if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+                return None
+            pos = 12
+            while True:
+                fh.seek(pos)
+                chunk_header = fh.read(8)
+                if len(chunk_header) < 8:
+                    return None
+                chunk_id = chunk_header[:4]
+                chunk_size = int.from_bytes(chunk_header[4:8], "little")
+                if chunk_id == b"data":
+                    return pos + 8
+                pos += 8 + chunk_size + (chunk_size & 1)  # chunks are word-aligned
+    except OSError:
+        return None
