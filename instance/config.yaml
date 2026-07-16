@@ -42,7 +42,7 @@ llm:
   max_tokens: 4096            # cap on generated tokens per call; also reserved from the window
 
 session:
-  history_limit: 30
+  history_limit: 40   # persisted user/assistant turns across events (2 per event); tool calls are NOT counted here
   timeout_minutes: 45
 
 memory:
