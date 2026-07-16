@@ -11,7 +11,7 @@ if typing.TYPE_CHECKING:
 
 from ares.core.event import Event
 from ares.core.llm.client import LLMClient
-from ares.core.prompt import build_system_prompt
+from ares.core.prompt import RULES_REMINDER, build_system_prompt
 from ares.core.router import ResponseRouter
 from ares.core.session import SessionManager
 from ares.core.tool import ToolContext, ToolRegistry, ToolResult
@@ -28,6 +28,75 @@ USER_INITIATED_TYPES = {
     "web_message",
 }
 
+# --- Context guard (§4.10) ---------------------------------------------------
+# Cheap, dependency-free token estimate (spec §12 forbids a tokenizer dep): ~4
+# chars/token, rounded up so the guard errs toward keeping headroom.
+_CHARS_PER_TOKEN = 4
+_MSG_OVERHEAD_TOKENS = 4  # per-message role/formatting overhead
+# Tokens reserved for the model's own output when `max_tokens` isn't configured.
+_DEFAULT_OUTPUT_RESERVE = 4096
+# Never let the fitted input budget collapse below this (keeps the guard sane if
+# context_window is misconfigured tiny).
+_MIN_INPUT_BUDGET = 2048
+# Reinject the RULES reminder every N tool iterations during a long loop.
+_REMINDER_EVERY = 20
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count for a string (ceil of chars / 4)."""
+    if not text:
+        return 0
+    return (len(text) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN
+
+
+def message_tokens(msg: dict) -> int:
+    """Rough token count for one OAI message dict (content + tool_calls)."""
+    total = _MSG_OVERHEAD_TOKENS
+    content = msg.get("content")
+    if isinstance(content, str):
+        total += estimate_tokens(content)
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function", {}) or {}
+        total += estimate_tokens(fn.get("name", "")) + estimate_tokens(fn.get("arguments") or "")
+    return total
+
+
+def fit_context(messages: list[dict], budget: int) -> list[dict]:
+    """Trim `messages` to ~`budget` estimated input tokens for one LLM call.
+
+    Invariants: messages[0] (the system prompt) is ALWAYS kept — the guard drops
+    from the oldest non-system messages and keeps the most recent ones, so the
+    system prompt and its RULES block can never be squeezed out on our side. The
+    returned suffix never begins with an orphan `tool` message (a tool result
+    whose assistant `tool_calls` turn was trimmed), which would violate the OAI
+    contract. At least the most recent message is always kept, even if the two of
+    them exceed `budget` (nothing safe to drop).
+    """
+    if len(messages) <= 1:
+        return list(messages)
+    system = messages[0]
+    rest = messages[1:]
+    used = message_tokens(system)
+    kept_rev: list[dict] = []
+    for m in reversed(rest):
+        t = message_tokens(m)
+        if kept_rev and used + t > budget:
+            break
+        used += t
+        kept_rev.append(m)
+    kept = list(reversed(kept_rev))
+    # Drop leading orphan tool results (their assistant turn was trimmed away).
+    while kept and kept[0].get("role") == "tool":
+        kept.pop(0)
+    return [system] + kept
+
+
+def _cap_content(text: str, char_cap: int) -> str:
+    """Truncate a tool result so a single dump can't dominate the context."""
+    if char_cap <= 0 or len(text) <= char_cap:
+        return text
+    return text[:char_cap] + f"\n…[truncated: {len(text) - char_cap} chars omitted]"
+
 
 class Agent:
     """Coordinates LLM calls, tool execution, and reply delivery for one event."""
@@ -43,6 +112,8 @@ class Agent:
         services: dict[str, object],
         persona: str,
         max_tool_iterations: int = 10,
+        context_window: int = 128000,
+        max_output_tokens: int | None = None,
         tracer: Tracer | None = None,
     ) -> None:
         """Store collaborators needed to process events."""
@@ -55,7 +126,26 @@ class Agent:
         self.services = services
         self.persona = persona
         self.max_tool_iterations = max_tool_iterations
+        self.context_window = context_window
+        # Reserve room for the model's reply out of the window (§4.10).
+        self._output_reserve = max_output_tokens or _DEFAULT_OUTPUT_RESERVE
+        # Cap any single tool result at ~1/8 of the window so one dump can't
+        # crowd out everything else before fit_context even runs.
+        self._tool_result_char_cap = max(8000, (context_window // 8) * _CHARS_PER_TOKEN)
         self.tracer = tracer or NullTracer()
+
+    def _input_budget(self, tools: list[dict] | None) -> int:
+        """Estimated input-token budget for one call, after reserving output and
+        the tool-schema tokens (which also count against the window)."""
+        budget = self.context_window - self._output_reserve
+        if tools:
+            budget -= estimate_tokens(json.dumps(tools))
+        return max(budget, _MIN_INPUT_BUDGET)
+
+    async def _chat(self, messages: list[dict], tools: list[dict] | None) -> dict:
+        """Fit `messages` to the input budget (system prompt always kept), then
+        call the LLM. Trimming is recomputed each call from the full list."""
+        return await self.llm.chat(fit_context(messages, self._input_budget(tools)), tools)
 
     async def handle(self, event: Event) -> None:
         """Process a single event end-to-end per spec §4.10."""
@@ -111,7 +201,7 @@ class Agent:
 
             # STEP 7 — the loop
             while True:
-                reply = await self.llm.chat(messages, self.registry.to_oai_schema(active))
+                reply = await self._chat(messages, self.registry.to_oai_schema(active))
                 tool_calls = reply.get("tool_calls")
 
                 self.tracer.emit(
@@ -188,11 +278,16 @@ class Agent:
                         {
                             "role": "tool",
                             "tool_call_id": tc.get("id"),
-                            "content": result.content,
+                            "content": _cap_content(result.content, self._tool_result_char_cap),
                         }
                     )
 
                 iterations += 1
+
+                # Reinject the trust-boundary reminder during long loops, so the
+                # injection defense stays salient after many tool outputs (§4.10).
+                if iterations % _REMINDER_EVERY == 0:
+                    messages.append({"role": "system", "content": RULES_REMINDER})
 
                 if iterations >= self.max_tool_iterations:
                     messages.append(
@@ -201,7 +296,8 @@ class Agent:
                             "content": "Tool budget exhausted. Respond now without tools.",
                         }
                     )
-                    final_reply = await self.llm.chat(messages, tools=None)
+                    messages.append({"role": "system", "content": RULES_REMINDER})
+                    final_reply = await self._chat(messages, tools=None)
                     final_text = final_reply.get("content") or ""
                     self.tracer.emit(
                         "reply",

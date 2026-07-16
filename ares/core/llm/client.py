@@ -24,6 +24,7 @@ class LLMClient:
         model: str,
         timeout_s: float = 60.0,
         max_retries: int = 2,
+        max_tokens: int | None = None,
     ) -> None:
         """Initialize LLM client.
 
@@ -33,12 +34,15 @@ class LLMClient:
             model: Model name (e.g., gpt-4)
             timeout_s: Request timeout in seconds (default 60)
             max_retries: Maximum number of retries on failure (default 2)
+            max_tokens: Cap on generated tokens per call (OpenAI `max_tokens`).
+                None omits it (provider default).
         """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_s = timeout_s
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
         self._client = httpx.AsyncClient(timeout=timeout_s)
 
     async def chat(
@@ -72,6 +76,8 @@ class LLMClient:
             "messages": messages,
             "temperature": temperature,
         }
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
         if tools is not None:
             body["tools"] = tools
             body["tool_choice"] = "auto"

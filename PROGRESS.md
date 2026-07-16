@@ -1,12 +1,35 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.5. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.6. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5 + v1.6. ***
+
+v1.6 (operator-authorised spec change) done: context guard in the agent loop (§4.10).
+Before v1.6 there was NO token budget anywhere — only count-based trimming (history_limit=30,
+max_tool_iterations) — so a heavy tool loop (esp. read_source's 256 KiB cap ≈ 60k tokens in
+one message) could exceed the model's window and let the provider truncate, possibly dropping
+messages[0] = the system prompt + frozen RULES. Fixes:
+ - `LLMConfig` gains `context_window` (input budget, default 128000) + `max_tokens` (output cap,
+   default None → omit; sent as OpenAI max_tokens and reserved from the window). Free-form? No —
+   real pydantic fields; existing configs still validate (defaults).
+ - `ares/core/agent.py`: module helpers `estimate_tokens`/`message_tokens`/`fit_context`/`_cap_content`
+   (char/4 heuristic, no tokenizer dep per §12). `Agent` gains `context_window`/`max_output_tokens`;
+   `_chat()` fits messages to `context_window − output_reserve − tool-schema tokens` before EVERY
+   call. fit_context ALWAYS keeps messages[0] and never leaves a leading orphan `tool` result, so
+   the system prompt is structurally un-droppable on our side. Each tool result capped at
+   ~context_window/8 tokens on append.
+ - `ares/core/prompt.py`: new `RULES_REMINDER` fixed constant (like RULES, never config-sourced),
+   reinjected every 20 iterations and before the forced-final turn.
+ - `llm/client.py` sends `max_tokens` when set; `main.py` wires both through. New
+   `tests/test_context_guard.py` (9 tests). Full suite 271 passed.
+ - LIVE deployment values (staging etc-ares + rootfs): context_window 256000, max_tokens 32000,
+   max_tool_iterations 100. Repo dev config: 32000 / 4096 / 10. Code auto-deploys via updater on
+   push; the config values need the manual rootfs edit + restart.
+
 
 v1.5 (operator-authorised spec change) done: Home Assistant tools can control real
 devices (§6.1). Grounded in the live trace: every `control_device` on `climate.*`

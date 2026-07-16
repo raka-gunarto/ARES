@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.5
+# ARES — Implementation Specification v1.6
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -39,6 +39,18 @@ gains an `attributes: string[]?` param and now returns a single entity's **full*
 attribute set by default (so the model can see `hvac_modes`, `supported_features`,
 `current_temperature`, … and decide how to act); a domain listing stays state-only
 unless `attributes` is given. No new tool, no new dependency.
+
+v1.6 adds a **context guard** to the agent loop (§4.10) so a long/heavy tool loop
+can no longer push the assembled messages past the model's context window or let
+a provider silently truncate the system prompt. `LLMConfig` gains `context_window`
+(the input-token budget) and `max_tokens` (per-call output cap, sent as OpenAI
+`max_tokens` and reserved from the window). Before every LLM call the agent fits
+`messages` to that budget with a cheap char/4 token estimate (no tokenizer dep):
+messages[0] (the system prompt + RULES) is **never** trimmed — the guard drops
+oldest non-system messages and never leaves an orphan `tool` result. Each tool
+result is capped (~1/8 of the window) so one dump can't dominate, and a compact
+`RULES_REMINDER` (fixed code constant, never config) is reinjected every 20 tool
+iterations and before the forced-final turn. No new dependency.
 
 ---
 
@@ -508,14 +520,16 @@ into the dict under the names given in §7.
 ```python
 class LLMClient:
     def __init__(self, base_url: str, api_key: str, model: str,
-                 timeout_s: float = 60.0, max_retries: int = 2) -> None
+                 timeout_s: float = 60.0, max_retries: int = 2,
+                 max_tokens: int | None = None) -> None
     async def chat(self, messages: list[dict], tools: list[dict] | None = None,
                    temperature: float = 0.7) -> dict   # raw OAI response message
 ```
 
 `httpx.AsyncClient`, POST `{base_url}/chat/completions`. Retries on network
 errors and 5xx with 2 s backoff. Raises `LLMError` after exhausting retries.
-No streaming.
+No streaming. When `max_tokens` is set it is sent as the OpenAI `max_tokens`
+field (per-call output cap); when None it is omitted.
 
 ### 4.10 `core/agent.py` — the event handling cycle (exact algorithm)
 
@@ -525,9 +539,20 @@ class Agent:
                  sessions: SessionManager, tasks: TaskStore,
                  memory: BaseMemory, router: ResponseRouter,
                  services: dict[str, object], persona: str,
-                 max_tool_iterations: int = 10) -> None
+                 max_tool_iterations: int = 10,
+                 context_window: int = 128000,
+                 max_output_tokens: int | None = None) -> None
     async def handle(self, event: Event) -> None
 ```
+
+**Context guard.** Before each `llm.chat` call the agent fits `messages` to an
+input budget of `context_window − output_reserve − tool-schema tokens` (where
+`output_reserve` is `max_output_tokens` or 4096), using a char/4 token estimate.
+`messages[0]` (system prompt + RULES) is always kept; the guard drops the oldest
+non-system messages and never leaves a leading orphan `tool` result. Each tool
+result appended to `messages` is capped at ~`context_window/8` tokens. The
+`RULES_REMINDER` constant is appended every 20 iterations and before the
+forced-final turn.
 
 `handle(event)` steps — implement in this order, nothing more:
 
@@ -546,15 +571,18 @@ class Agent:
      ```
 5. `messages = [system] + session.history + [event_message]`.
 6. `active = registry.core_tools()`; `iterations = 0`.
-7. Loop: call `llm.chat(messages, to_oai_schema(active))`.
+7. Loop: call `llm.chat(fit(messages), to_oai_schema(active))` — the context
+   guard fits `messages` to the input budget on every call (system prompt never
+   trimmed; see "Context guard" above).
    - If the reply has tool calls: execute each **sequentially** via
      `registry.get(name).run(ctx, **args)`; unknown tool or bad args →
      `ToolResult(ok=False, content="error: ...")` (never raise). Append the
-     assistant message and tool results to `messages`. If a call was
+     assistant message and (capped) tool results to `messages`. If a call was
      `search_tools`, extend `active` with the returned tools (deduped).
-     `iterations += 1`; if `iterations >= max_tool_iterations`, append a user
-     message `"Tool budget exhausted. Respond now without tools."` and loop
-     once more with `tools=None`, then treat as final.
+     `iterations += 1`; reinject `RULES_REMINDER` every 20 iterations; if
+     `iterations >= max_tool_iterations`, append a user message `"Tool budget
+     exhausted. Respond now without tools."` plus `RULES_REMINDER` and loop once
+     more with `tools=None`, then treat as final.
    - If the reply has content and no tool calls: final.
 8. Final assistant text handling:
    - If the event was user-initiated (step-4 first case) and **no `speak` tool
@@ -957,6 +985,8 @@ llm:
   model: qwen2.5:32b-instruct
   temperature: 0.7
   max_tool_iterations: 10
+  context_window: 32000       # input-token budget the guard fits messages into
+  max_tokens: 4096            # per-call output cap; also reserved from the window
 
 session:
   history_limit: 30

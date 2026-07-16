@@ -207,6 +207,7 @@ async def main(config_path: str) -> None:
         base_url=config.llm.base_url,
         api_key=config.llm.api_key,
         model=config.llm.model,
+        max_tokens=config.llm.max_tokens,
     )
     memory = FilesystemMemory(Path(config.memory.root))
 
@@ -390,6 +391,8 @@ async def main(config_path: str) -> None:
         services=services,
         persona=config.persona,
         max_tool_iterations=config.llm.max_tool_iterations,
+        context_window=config.llm.context_window,
+        max_output_tokens=config.llm.max_tokens,
         tracer=tracer,
     )
     dispatcher = Dispatcher(bus, agent, critical)

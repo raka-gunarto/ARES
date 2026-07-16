@@ -32,6 +32,13 @@ class LLMConfig(BaseModel):
     model: str
     temperature: float = 0.7
     max_tool_iterations: int = 10
+    # Input-token budget the agent's context guard fits messages into before each
+    # call (the system prompt is never trimmed). Set to the model's real context
+    # window. See §4.10.
+    context_window: int = 128000
+    # Cap on generated tokens per call, sent as OpenAI `max_tokens`; also reserved
+    # out of `context_window` when computing the input budget. None → omit / no cap.
+    max_tokens: int | None = None
 
 
 class SessionConfig(BaseModel):
