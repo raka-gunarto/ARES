@@ -8,6 +8,15 @@ if typing.TYPE_CHECKING:
     pass
 
 
+def _fmt_attr_value(value: typing.Any, limit: int = 200) -> str:
+    """Render one HA attribute value, truncating runaway lists/strings so a
+    single noisy entity (e.g. a light's `effect_list`) can't flood the reply."""
+    s = str(value)
+    if len(s) > limit:
+        s = s[:limit] + "…"
+    return s
+
+
 class GetHomeState(BaseTool):
     """Get Home Assistant entity state or domain summary."""
 
@@ -15,8 +24,13 @@ class GetHomeState(BaseTool):
     description = (
         "Get the current state of a Home Assistant entity, all entities in a domain, "
         "or a filtered summary of all devices. "
-        "Provide entity_id to check a single device, domain to list all devices in that domain, "
-        "or neither for a summary snapshot."
+        "Provide entity_id to check a single device (returns ALL of its attributes — "
+        "e.g. a climate entity's hvac_modes, hvac_action, current_temperature, "
+        "fan_modes and supported_features, which you need to decide how to control it), "
+        "domain to list all devices in that domain (state only, capped at 50), "
+        "or neither for a summary snapshot. "
+        "Pass `attributes` to choose exactly which attribute keys to show (works for the "
+        "domain listing too), or ['*'] for every attribute."
     )
     keywords = ("home", "state", "status", "temperature", "light", "door", "sensor", "house")
     parameters = {
@@ -30,6 +44,16 @@ class GetHomeState(BaseTool):
                 "type": "string",
                 "description": "The domain to list (e.g., 'light', 'climate', 'sensor')",
             },
+            "attributes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional attribute keys to show for each entity (e.g. "
+                    "['hvac_modes','current_temperature']). Use ['*'] for every "
+                    "attribute. Omit: a single entity shows all attributes, a domain "
+                    "listing shows state only."
+                ),
+            },
         },
     }
     core = False
@@ -42,34 +66,50 @@ class GetHomeState(BaseTool):
 
         entity_id = kwargs.get("entity_id")
         domain = kwargs.get("domain")
+        override = kwargs.get("attributes")
+
+        def keys_for(attrs: dict, default_all: bool) -> list:
+            """Attribute keys to show: the caller's override (['*'] = all), else
+            every attribute for a single entity / none for a domain listing."""
+            if override:
+                if "*" in override:
+                    return list(attrs.keys())
+                return [str(k) for k in override]
+            return list(attrs.keys()) if default_all else []
 
         try:
             if entity_id:
-                # Get single entity state
+                # Single entity: surface ALL attributes by default so the model can
+                # see what actions are valid (hvac_modes, supported_features, ...).
                 state_obj = await svc.get_state(entity_id)
                 if state_obj is None:
                     return ToolResult(True, f"Entity {entity_id} not found.")
 
-                # Format state with key attributes
                 state_str = state_obj.get("state", "unknown")
                 attrs = state_obj.get("attributes", {})
                 lines = [f"{entity_id}: {state_str}"]
-
-                # Add key attributes
-                for key in ["friendly_name", "temperature", "humidity", "brightness"]:
+                for key in keys_for(attrs, default_all=True):
                     if key in attrs:
-                        lines.append(f"  {key}: {attrs[key]}")
+                        lines.append(f"  {key}: {_fmt_attr_value(attrs[key])}")
 
                 return ToolResult(True, "\n".join(lines))
 
             elif domain:
-                # Get all entities in domain, capped at 50 lines
+                # Domain listing stays compact (state only) unless attributes are
+                # explicitly requested, to respect the 50-line cap.
                 states = await svc.get_states(domain)
                 lines = []
                 for state_obj in states[:50]:
                     eid = state_obj.get("entity_id", "unknown")
                     state = state_obj.get("state", "unknown")
-                    lines.append(f"{eid}: {state}")
+                    attrs = state_obj.get("attributes", {})
+                    parts = [
+                        f"{k}={_fmt_attr_value(attrs[k])}"
+                        for k in keys_for(attrs, default_all=False)
+                        if k in attrs
+                    ]
+                    suffix = f" [{', '.join(parts)}]" if parts else ""
+                    lines.append(f"{eid}: {state}{suffix}")
 
                 content = "\n".join(lines)
                 if len(states) > 50:
@@ -91,9 +131,15 @@ class ControlDevice(BaseTool):
 
     name = "control_device"
     description = (
-        "Send a control command to a Home Assistant device. "
-        "Maps action names like 'turn_on', 'turn_off', 'set_temperature' to HA service calls. "
-        "Optionally provide a value for actions that accept one."
+        "Send a control command to a Home Assistant device: `action` is the HA "
+        "service to call (e.g. 'turn_on', 'set_hvac_mode', 'set_fan_mode'). "
+        "HA services take NAMED parameters — pass them in `data` (e.g. "
+        "set_hvac_mode needs data={'hvac_mode':'off'}, set_fan_mode needs "
+        "data={'fan_mode':'auto'}, a light dim needs data={'brightness_pct':40}). "
+        "Not every device has a 'turn_off' service: if turn_off fails or the entity "
+        "lacks it (check supported_features / hvac_modes via get_home_state), turn a "
+        "climate device off with action='set_hvac_mode', data={'hvac_mode':'off'}. "
+        "The legacy `value` field still works for simple cases like set_temperature."
     )
     keywords = (
         "home",
@@ -116,11 +162,19 @@ class ControlDevice(BaseTool):
             },
             "action": {
                 "type": "string",
-                "description": "The action to perform (e.g., 'turn_on', 'turn_off', 'set_temperature')",
+                "description": "The HA service to call (e.g., 'turn_on', 'set_hvac_mode', 'set_temperature')",
+            },
+            "data": {
+                "type": "object",
+                "description": (
+                    "Named service parameters passed straight to Home Assistant "
+                    "(e.g. {'hvac_mode':'off'}, {'temperature':21}, "
+                    "{'brightness_pct':40}). This is how most services take input."
+                ),
             },
             "value": {
                 "type": "string",
-                "description": "Optional value for the action (e.g., '21' for set_temperature)",
+                "description": "Legacy single value (e.g. '21' for set_temperature). Prefer `data`.",
             },
         },
         "required": ["entity_id", "action"],
@@ -151,18 +205,29 @@ class ControlDevice(BaseTool):
                     "triggered by ARES. The operator can do it from the dashboard.",
                 )
 
-            # Build data dict based on action and value
-            data: dict[str, typing.Any] = {}
+            # Named service params come through `data`; `value` is a back-compat
+            # convenience that fills the obvious field only when `data` omits it.
+            data: dict[str, typing.Any] = dict(kwargs.get("data") or {})
             if value is not None:
                 if action == "set_temperature":
-                    data["temperature"] = value
+                    data.setdefault("temperature", value)
                 else:
-                    data["value"] = value
+                    data.setdefault("value", value)
 
             # Call the service
             result = await svc.call_service(domain, action, entity_id, data)
 
-            return ToolResult(True, f"{action} sent to {entity_id}. Result: {result}")
+            # Report the resulting state so the caller can confirm it took effect,
+            # rather than dumping HA's raw changed-entities array.
+            new_state = None
+            if isinstance(result, list):
+                for s in result:
+                    if isinstance(s, dict) and s.get("entity_id") == entity_id:
+                        new_state = s.get("state")
+                        break
+            if new_state is not None:
+                return ToolResult(True, f"{action} sent to {entity_id}; state is now '{new_state}'.")
+            return ToolResult(True, f"{action} sent to {entity_id}.")
 
         except Exception as e:
             return ToolResult(False, f"Home error: {e}")

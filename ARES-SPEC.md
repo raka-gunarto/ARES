@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.4
+# ARES — Implementation Specification v1.5
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -28,6 +28,17 @@ always-in-context** (§5), so ARES recalls and stores without first having to
 `search_tools` for the capability — enabling proactive memory use. The
 destructive `memory_delete` stays discoverable-only (§6.1). No new tool, no new
 dependency; this only changes which existing tools are always loaded.
+
+v1.5 makes the two Home Assistant tools actually able to control real devices
+(§6.1). `control_device` gains a `data: object?` param passed verbatim as the
+HA service's named fields — HA services take named parameters (`set_hvac_mode`
+needs `hvac_mode`, `set_fan_mode` needs `fan_mode`, …), which a single `value`
+string cannot express, so anything but `set_temperature` previously failed. It
+also reports the entity's resulting state instead of HA's raw array. `get_home_state`
+gains an `attributes: string[]?` param and now returns a single entity's **full**
+attribute set by default (so the model can see `hvac_modes`, `supported_features`,
+`current_temperature`, … and decide how to act); a domain listing stays state-only
+unless `attributes` is given. No new tool, no new dependency.
 
 ---
 
@@ -765,8 +776,8 @@ Keywords still apply so `search_tools` surfaces `memory_delete` when relevant.
 
 | name | params | keywords | behaviour |
 |---|---|---|---|
-| `get_home_state` | `entity_id: string?`, `domain: string?` | home, state, status, temperature, light, door, sensor, house | One entity's state, or all states in a domain (capped at 50 lines). No args → the filtered snapshot summary. |
-| `control_device` | `entity_id: string`, `action: string`, `value: string?` | home, control, turn, switch, light, set, heating, lock, open, close | Maps to `call_service` (e.g. action `turn_on`, `set_temperature`+value). Returns HA's result. |
+| `get_home_state` | `entity_id: string?`, `domain: string?`, `attributes: string[]?` | home, state, status, temperature, light, door, sensor, house | One entity's state + **all** its attributes (or the `attributes` keys, `['*']` = all), or all states in a domain (capped at 50 lines; state-only unless `attributes` given). No args → the filtered snapshot summary. |
+| `control_device` | `entity_id: string`, `action: string`, `data: object?`, `value: string?` | home, control, turn, switch, light, set, heating, lock, open, close | Maps to `call_service`; `data` is passed verbatim as the service's named fields (e.g. `set_hvac_mode` + `{hvac_mode:"off"}`). `value` is a back-compat convenience (e.g. `set_temperature`+value). Returns the entity's resulting state. |
 | `list_devices` | `domain: string?` | home, devices, entities, list, available | Entity ids + friendly names, capped at 80 lines. |
 | `camera_snapshot` | `camera_entity: string` | camera, snapshot, look, see, check, picture, view | Fetches a snapshot via HA REST, saves to a temp file, returns `ok=True` with a short text description path note. v1: the LLM gets `"Snapshot saved: {path} ({bytes} bytes)"` — vision analysis is out of scope. |
 

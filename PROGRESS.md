@@ -1,12 +1,35 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.4. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.5. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5. ***
+
+v1.5 (operator-authorised spec change) done: Home Assistant tools can control real
+devices (§6.1). Grounded in the live trace: every `control_device` on `climate.*`
+failed — `set_hvac_mode` 400'd because the tool could only send a `value` field (HA
+wants the named `hvac_mode`), and `climate.turn_off` 500'd because that AC reports
+`supported_features: 9` (no turn_off service; off = `set_hvac_mode(hvac_mode="off")`).
+The model also couldn't see `hvac_modes`/`supported_features` because `get_home_state`
+showed only 4 hardcoded attributes. Fixes (`ares/plugins/tools/home_tools.py`):
+ - `control_device` gains `data: object?` passed verbatim as HA service fields; `value`
+   kept as a back-compat convenience (`setdefault`, so `data` wins). Result now reports
+   the entity's resulting state instead of HA's raw array.
+ - `get_home_state` gains `attributes: string[]?`; a single entity returns ALL attributes
+   by default, a domain listing stays state-only unless `attributes` given (`['*']` = all).
+   Supersedes the stale `ha-include-attributes` branch (which defaulted to a nonexistent
+   `svc.snapshot_attrs`). New `tests/test_home_tools.py` (10 tests). Full suite 262 passed.
+ - Pure `ares` code -> auto-deploys via the updater on push to main. No config/unit change.
+
+SIP (not a spec change): in-call endpointing is now silence-driven (§7.5) instead of a fixed
+`time.sleep(record_seconds)` window — replies come ~`silence_seconds` (default 1.0s) after the
+caller stops. `record_seconds` (8) is now only the hard cap. `ares/plugins/sip/client.py`
+`_wait_for_utterance` tails the recorder WAV and measures RMS (stdlib, no live streaming per
+§7.5). Deployed live (f0ba007). Config knobs `silence_seconds`/`silence_rms_threshold` added
+to the sip block (repo + staging etc-ares).
 
 v1.4 (operator-authorised) done: proactive memory + queue awareness.
  - Memory recall/store tools promoted from discoverable (§6.1) to CORE / always-in-context
