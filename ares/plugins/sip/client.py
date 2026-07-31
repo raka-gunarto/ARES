@@ -39,6 +39,12 @@ except ImportError:
 
 logger = get_logger(__name__)
 
+# Upper bound on how long one recording pass will sit waiting for the caller to
+# start talking. Not a turn timeout — the pass just returns "no speech" and the
+# call loop opens another one; it exists so a wedged call cannot hold the shared
+# pjsua2 thread indefinitely.
+_MAX_IDLE_SECONDS = 120.0
+
 
 # pjsua2 subclasses can only be defined when pjsua2 is importable.
 if _HAVE_PJSUA2:
@@ -125,6 +131,7 @@ class SIPService:
         answer_settle_seconds: float = 1.2,
         silence_seconds: float = 1.0,
         silence_rms_threshold: int = 500,
+        post_speech_guard_seconds: float = 0.3,
     ) -> None:
         """Initialize the SIP service.
 
@@ -153,6 +160,9 @@ class SIPService:
             silence_rms_threshold: PCM RMS level (16-bit, 0..32767) below which a
                 frame counts as silence. Raise it in a noisy room, lower it if
                 quiet speech is being clipped.
+            post_speech_guard_seconds: pause after ARES finishes speaking before
+                listening again, so the tail of its own voice (echoed back by a
+                far-end speakerphone) is not captured as the caller's turn.
 
         Raises:
             RuntimeError: if the `sip` extra (pjsua2) is not installed.
@@ -174,6 +184,14 @@ class SIPService:
         self.answer_settle_seconds = answer_settle_seconds
         self.silence_seconds = silence_seconds
         self.silence_rms_threshold = silence_rms_threshold
+        self.post_speech_guard_seconds = post_speech_guard_seconds
+
+        # Turn-taking gates. pjsua2 commands all share ONE executor thread, so a
+        # recording in flight would otherwise block the reply that is meant to
+        # end it: `_abort_record` cuts the recording short (within one poll) and
+        # `_speaking` keeps the listener out while ARES has the floor.
+        self._speaking = threading.Event()
+        self._abort_record = threading.Event()
 
         self._on_call: Callable[[str], None] | None = None
         self._on_message: Callable[[str, str], None] | None = None
@@ -325,12 +343,20 @@ class SIPService:
                 self._play_wav_blocking(call, wav)
 
     async def speak_into_call(self, text: str) -> bool:
-        """Speak `text` into the currently-active call."""
+        """Speak `text` into the currently-active call.
+
+        Takes the floor immediately: any recording in flight is aborted so this
+        playback is not queued behind it on the shared pjsua2 thread. Without
+        that, a reply waits out the whole `record_seconds` cap of a recording
+        that was only ever going to capture the caller listening.
+        """
         if not self.has_active_call():
             logger.warning("sip: no active call to speak into")
             return False
+        self._abort_record.set()
         wav = await self._synth(text)
         if not wav:
+            self._abort_record.clear()
             return False
         try:
             await self._in_pjsua2(self._play_wav_blocking, self._active_call, wav)
@@ -338,6 +364,8 @@ class SIPService:
         except Exception:
             logger.exception("sip: speak_into_call failed")
             return False
+        finally:
+            self._abort_record.clear()
 
     def _play_wav_blocking(self, call, wav: str) -> None:
         """Play a WAV into the call's audio media, blocking for its duration."""
@@ -347,18 +375,50 @@ class SIPService:
             return
         player = pj.AudioMediaPlayer()
         player.createPlayer(wav, pj.PJMEDIA_FILE_NO_LOOP)
-        player.startTransmit(media)
-        time.sleep(_wav_duration(wav) + 0.4)
-        with contextlib.suppress(Exception):
-            player.stopTransmit(media)
+        self._speaking.set()
+        try:
+            player.startTransmit(media)
+            time.sleep(_wav_duration(wav) + 0.4)
+            with contextlib.suppress(Exception):
+                player.stopTransmit(media)
+        finally:
+            self._speaking.clear()
+
+    async def hangup(self) -> bool:
+        """Hang up the currently-active call. True if a call was ended."""
+        if not self.has_active_call():
+            return False
+        self._abort_record.set()
+        try:
+            await self._in_pjsua2(self._hangup_blocking, self._active_call)
+            return True
+        except Exception:
+            logger.exception("sip: hangup failed")
+            return False
+        finally:
+            self._abort_record.clear()
+
+    def _hangup_blocking(self, call) -> None:
+        call.hangup(pj.CallOpParam())
+        logger.info("sip: hung up")
 
     # ---- in-call STT --------------------------------------------------------
 
     async def record_utterance(self) -> str | None:
-        """Record one utterance from the active call and transcribe it (§7.5)."""
+        """Record one utterance from the active call and transcribe it (§7.5).
+
+        Returns None — without ever reaching Whisper — when the pass captured no
+        speech. Transcribing near-silence is what makes Whisper emit phantom
+        one-word turns ("you", "Thank you."), and each phantom turn costs a full
+        serialized agent cycle ahead of whatever the caller actually says next.
+        """
         if not self.has_active_call():
             return None
-        wav = str(Path(tempfile.mkdtemp()) / "utt.wav")
+        await self._await_floor()
+        if not self.has_active_call():
+            return None
+        tmpdir = tempfile.mkdtemp()
+        wav = str(Path(tmpdir) / "utt.wav")
         try:
             ok = await self._in_pjsua2(self._record_blocking, self._active_call, wav)
             if not ok:
@@ -372,6 +432,22 @@ class SIPService:
         finally:
             with contextlib.suppress(OSError):
                 Path(wav).unlink()
+            with contextlib.suppress(OSError):
+                Path(tmpdir).rmdir()
+
+    async def _await_floor(self) -> None:
+        """Wait (off the pjsua2 thread) until ARES has finished speaking.
+
+        Async on purpose: sleeping here leaves the single pjsua2 executor thread
+        free for the playback we are waiting on.
+        """
+        # `_abort_record` is also held across TTS synthesis, i.e. from the moment
+        # ARES decides to speak until playback ends — so we wait out the whole
+        # reply rather than opening passes that would be aborted on arrival.
+        while self._speaking.is_set() or self._abort_record.is_set():
+            await asyncio.sleep(0.05)
+        if self.post_speech_guard_seconds > 0:
+            await asyncio.sleep(self.post_speech_guard_seconds)
 
     def _record_blocking(self, call, wav: str) -> bool:
         media = call.audio_media()
@@ -381,34 +457,50 @@ class SIPService:
         recorder.createRecorder(wav)
         media.startTransmit(recorder)
         try:
-            self._wait_for_utterance(call, wav)
+            speech_seen = self._wait_for_utterance(call, wav)
         finally:
             with contextlib.suppress(Exception):
                 media.stopTransmit(recorder)
             del recorder  # flush + close the WAV
+        if not speech_seen:
+            return False
         return Path(wav).exists() and Path(wav).stat().st_size > 44
 
-    def _wait_for_utterance(self, call, wav: str) -> None:
+    def _wait_for_utterance(self, call, wav: str) -> bool:
         """Block until the caller has finished speaking (spec §7.5 endpointing).
 
         Tails the WAV the PJSIP recorder is writing (no live sample streaming —
         we only read the temp file, per §7.5) and measures RMS energy on each
         newly-written slice. Returns after `silence_seconds` of *continuous*
-        silence once speech has been heard, or at the `record_seconds` hard cap,
-        or immediately if the call drops — whichever comes first. Silence before
-        the caller says anything does not count, so an opening pause never ends
-        the turn early.
+        silence once speech has been heard, or at the `record_seconds` hard cap
+        measured **from the first speech**, or as soon as the call drops or
+        `_abort_record` is set — whichever comes first.
+
+        The cap starts at first speech, not at open: idle listening must not eat
+        into it, or a caller who pauses before answering gets cut off mid-word.
+        Waiting while idle is bounded by `_MAX_IDLE_SECONDS` so a zombie call can
+        never hold the shared pjsua2 thread forever.
+
+        Returns:
+            True if any speech was captured, False if the pass heard only
+            silence (or was aborted) — the caller then skips transcription.
         """
         poll = 0.1
-        deadline = time.monotonic() + self.record_seconds
+        started = time.monotonic()
+        deadline: float | None = None  # set at first speech
         data_offset: int | None = None
         cursor = 0
         speech_seen = False
         silence_run = 0.0
 
-        while time.monotonic() < deadline:
-            if call.disconnected.is_set():
-                return
+        while True:
+            if call.disconnected.is_set() or self._abort_record.is_set():
+                return False
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                return speech_seen
+            if deadline is None and (now - started) >= _MAX_IDLE_SECONDS:
+                return False
             time.sleep(poll)
 
             if data_offset is None:
@@ -435,12 +527,14 @@ class SIPService:
                     level = _rms_int16(chunk[:n])
 
             if level >= self.silence_rms_threshold:
-                speech_seen = True
+                if not speech_seen:
+                    speech_seen = True
+                    deadline = time.monotonic() + self.record_seconds
                 silence_run = 0.0
             elif speech_seen:
                 silence_run += poll
                 if silence_run >= self.silence_seconds:
-                    return
+                    return True
 
     def _transcribe(self, wav: str) -> str | None:
         if self._stt is None:
@@ -479,6 +573,7 @@ class SIPService:
 
     async def aclose(self) -> None:
         """Hang up and destroy the endpoint."""
+        self._abort_record.set()  # free the shared pjsua2 thread for teardown
         try:
             await self._in_pjsua2(self._close_blocking)
         except Exception:

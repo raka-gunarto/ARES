@@ -84,8 +84,17 @@ class WhisperSTT:
             RuntimeError: If transcription fails.
         """
         try:
-            # Transcribe using the model; segments is a generator
-            segments, info = self.model.transcribe(audio, language="en")
+            # Transcribe using the model; segments is a generator.
+            # vad_filter drops non-speech regions before decoding — without it
+            # Whisper reliably hallucinates stock phrases ("you", "Thank you.")
+            # out of near-silence. condition_on_previous_text=False stops one
+            # such hallucination from seeding the next segment.
+            segments, info = self.model.transcribe(
+                audio,
+                language="en",
+                vad_filter=True,
+                condition_on_previous_text=False,
+            )
 
             # Join all segment texts
             transcript = "".join(segment.text for segment in segments).strip()

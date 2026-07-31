@@ -330,6 +330,7 @@ async def main(config_path: str) -> None:
             answer_settle_seconds=sip_config.get("answer_settle_seconds", 1.2),
             silence_seconds=sip_config.get("silence_seconds", 1.0),
             silence_rms_threshold=sip_config.get("silence_rms_threshold", 500),
+            post_speech_guard_seconds=sip_config.get("post_speech_guard_seconds", 0.3),
         )
         services["sip"] = sip_service
 
