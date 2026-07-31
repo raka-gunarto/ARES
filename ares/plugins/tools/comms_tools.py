@@ -45,6 +45,57 @@ class PlaceCall(BaseTool):
         return ToolResult(True, "Call initiated.")
 
 
+class EndCall(BaseTool):
+    """Hang up the call that is currently in progress."""
+
+    name = "end_call"
+    description = (
+        "Hang up the call currently in progress. Use this when the conversation is "
+        "finished, when the caller says goodbye, or when they ask you to hang up. "
+        "Pass `farewell` to say a closing line first — it is spoken in full before "
+        "the line drops. Anything you say after this tool will NOT reach the caller."
+    )
+    keywords = ("hang up", "hangup", "end call", "goodbye", "bye", "disconnect")
+    parameters = {
+        "type": "object",
+        "properties": {
+            "farewell": {
+                "type": "string",
+                "description": "Optional closing line spoken before hanging up.",
+            }
+        },
+        "required": []
+    }
+    core = False
+
+    async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
+        """Speak an optional farewell, then hang up."""
+        svc = ctx.services.get("sip")
+        if svc is None:
+            return ToolResult(False, "SIP is not configured.")
+        if not svc.has_active_call():
+            return ToolResult(False, "There is no call in progress.")
+
+        farewell = (kwargs.get("farewell") or "").strip()
+        try:
+            if farewell:
+                # Blocks until playback finishes, so the hangup below cannot cut
+                # the closing line off mid-word.
+                await svc.speak_into_call(farewell)
+            ended = await svc.hangup()
+        except Exception as e:
+            return ToolResult(False, f"SIP error: {e}")
+
+        # The call is gone, so the router must stop aiming at it — otherwise the
+        # final assistant turn fails over to PUSH and the caller gets a phone
+        # notification of the goodbye they just heard.
+        ctx.session.active_channel = ChannelType.CONSOLE
+
+        if not ended:
+            return ToolResult(False, "The call had already ended.")
+        return ToolResult(True, "Call ended.")
+
+
 class SendSipMessage(BaseTool):
     """Send a text message via SIP MESSAGE."""
 
@@ -83,4 +134,4 @@ class SendSipMessage(BaseTool):
             return ToolResult(False, f"SIP error: {e}")
 
 
-COMMS_TOOLS: list[BaseTool] = [PlaceCall(), SendSipMessage()]
+COMMS_TOOLS: list[BaseTool] = [PlaceCall(), EndCall(), SendSipMessage()]
