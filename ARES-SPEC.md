@@ -876,6 +876,10 @@ Source behaviour:
 - **Filter layer** (all config-driven, defaults shown in §8):
   - allow-list of domains (`binary_sensor`, `person`, `alarm_control_panel`, plus
     configured extras) and an allow-list of specific `entity_id`s;
+  - deny-list `blocked_entities` of `entity_id` globs, applied **first** and
+    winning over both allow-lists — a chatty integration usually lives inside a
+    domain that is otherwise wanted, so per-entity blocking is the only way to
+    silence it without giving up the domain;
   - drop events where `old_state.state == new_state.state`;
   - debounce: per entity, suppress events within `debounce_seconds` (default 5)
     of the last emitted one;
@@ -1023,6 +1027,7 @@ plugins:
     token: !secret HA_TOKEN
     allowed_domains: [binary_sensor, person, alarm_control_panel]
     allowed_entities: []
+    blocked_entities: []               # entity_id globs; wins over both allow-lists
     debounce_seconds: 5
     priority_rules:
       - match: "binary_sensor.smoke_*"

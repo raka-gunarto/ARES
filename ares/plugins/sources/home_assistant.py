@@ -185,6 +185,7 @@ class HomeAssistantSource(BaseSource):
             "allowed_domains", ["binary_sensor", "person", "alarm_control_panel"]
         )
         self.allowed_entities: set[str] = set(config.get("allowed_entities", []))
+        self.blocked_entities: list[str] = config.get("blocked_entities", [])
         self.debounce_seconds: float = float(config.get("debounce_seconds", 5))
         self.priority_rules: list[dict] = config.get("priority_rules", [])
         self.entity_rooms: dict[str, str] = config.get("entity_rooms", {})
@@ -210,6 +211,13 @@ class HomeAssistantSource(BaseSource):
             if new_state is None:
                 return False
             domain = entity_id.split(".", 1)[0]
+
+            # deny-list (globs) — wins over BOTH allow-lists. Chatty integrations
+            # (e.g. a game console going `unavailable` and back) sit inside an
+            # otherwise-wanted domain, so the only way to silence them without
+            # dropping the whole domain is a per-entity block.
+            if any(fnmatch.fnmatch(entity_id, pat) for pat in self.blocked_entities):
+                return False
 
             # allow-list
             if domain not in self.allowed_domains and entity_id not in self.allowed_entities:

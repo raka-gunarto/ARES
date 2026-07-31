@@ -76,6 +76,9 @@ plugins:
     token: !secret HA_TOKEN
     allowed_domains: [binary_sensor, person, alarm_control_panel]
     allowed_entities: []
+    # Inbound event deny-list (entity_id globs), applied before the allow-lists.
+    # For noisy integrations inside a domain you otherwise want.
+    blocked_entities: []
     # Outbound control safety gate (§14): domain.service pairs the LLM's
     # control_device tool must REFUSE. Default-denies doors + alarm disarm so a
     # poisoned note/message can't unlock the house. [] = allow all (not advised).

@@ -194,3 +194,48 @@ async def test_priority_rules_mapping() -> None:
     assert source.bus.qsize() == 1
     event = await source.bus.get()
     assert event.priority == Priority.NORMAL
+
+
+@pytest.mark.asyncio
+async def test_blocked_entities_glob() -> None:
+    """blocked_entities globs drop events even inside an allowed domain."""
+    config = {
+        "allowed_domains": ["binary_sensor", "person"],
+        "blocked_entities": ["binary_sensor.extantsquire769*"],
+        "debounce_seconds": 0,
+        "priority_rules": [],
+    }
+    source = make_source(config)
+
+    # The base entity and every derivative are silenced.
+    for entity in (
+        "binary_sensor.extantsquire769",
+        "binary_sensor.extantsquire769_subscribed_to_xbox_game_pass",
+    ):
+        assert await source.process_state_changed(
+            state_changed(entity, "off", "unavailable")
+        ) is False
+    assert source.bus.qsize() == 0
+
+    # A sibling in the same domain still gets through.
+    assert await source.process_state_changed(
+        state_changed("binary_sensor.front_door", "off", "on")
+    ) is True
+    assert source.bus.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_blocked_entities_beats_allowed_entities() -> None:
+    """The deny-list wins over an explicit allowed_entities entry."""
+    config = {
+        "allowed_domains": [],
+        "allowed_entities": ["switch.special"],
+        "blocked_entities": ["switch.*"],
+        "debounce_seconds": 0,
+        "priority_rules": [],
+    }
+    source = make_source(config)
+    assert await source.process_state_changed(
+        state_changed("switch.special", "off", "on")
+    ) is False
+    assert source.bus.qsize() == 0
