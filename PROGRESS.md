@@ -1,12 +1,45 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.6. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.7. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5 + v1.6. ***
+*** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5 + v1.6 + v1.7. ***
+
+v1.7 (operator-authorised spec change) done: in-call turn-taking (§7.5), `end_call`
+(§6.1), HA `blocked_entities` (§7.3). Grounded in a live call + the trace.
+ - LATENCY ROOT CAUSE — not model speed, a thread-serialization bug. Every pjsua2
+   command shares ONE executor thread. `_handle_call` re-opened a recording pass the
+   instant it emitted a transcript, so while the agent was thinking, the pass sat
+   holding that thread for the full `record_seconds` (8 s) capturing the caller
+   listening. `speak_into_call` then QUEUED BEHIND IT — every reply paid up to 8 s.
+   Fix: `_abort_record` (set by speak/hangup/aclose) ends the pass within one 0.1 s
+   poll; `_speaking` + `_await_floor` (async, so the executor stays free) keeps the
+   listener out while ARES has the floor, plus `post_speech_guard_seconds` (0.3) for
+   far-end speakerphone echo.
+ - PHANTOM "you" — same root cause. Those silent 8 s passes WERE transcribed, and
+   Whisper turns near-silence into stock phrases; each phantom `call_speech` event
+   then consumed a full serialized agent cycle AHEAD of the caller's real words, so
+   ARES answered "you" first. Fix: `_wait_for_utterance` returns `speech_seen` and a
+   no-speech pass never reaches Whisper. `stt.py` also gets `vad_filter=True` +
+   `condition_on_previous_text=False` (faster-whisper 1.2.1 in the VM bundles
+   `silero_vad_v6.onnx` — verified via ro loop-mount, no network fetch, no new dep).
+ - `record_seconds` cap now runs from FIRST SPEECH, not pass open (idle listening no
+   longer eats it and clips a caller who pauses); idle waits bounded by
+   `_MAX_IDLE_SECONDS = 120` so a zombie call can't hold the shared thread.
+ - `end_call(farewell?)`: speaks the farewell to completion, hangs up, then moves
+   `session.active_channel` off SIP_CALL so the final assistant turn doesn't fail
+   over to PUSH into a dead call. `SIPService.hangup()` added.
+ - `blocked_entities`: `entity_id` globs, applied BEFORE both allow-lists in
+   `process_state_changed`. The Xbox integration flapping to `unavailable` was
+   fanning out one agent cycle per entity — real state changes in an allowed domain,
+   so no existing rule caught them.
+ - Tests: `test_comms_tools.py` (7 new), `_wait_for_utterance` endpointing tests
+   against a real growing WAV (5 new), 2 new HA deny-list tests. Suite 285 passed.
+ - LIVE config: `blocked_entities: [binary_sensor.extantsquire769*]` needs the manual
+   rootfs edit + restart; the code auto-deploys via the updater on push.
 
 v1.6 (operator-authorised spec change) done: context guard in the agent loop (§4.10).
 Before v1.6 there was NO token budget anywhere — only count-based trimming (history_limit=30,
