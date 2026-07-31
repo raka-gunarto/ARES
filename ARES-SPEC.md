@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.6
+# ARES — Implementation Specification v1.7
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -51,6 +51,22 @@ oldest non-system messages and never leaves an orphan `tool` result. Each tool
 result is capped (~1/8 of the window) so one dump can't dominate, and a compact
 `RULES_REMINDER` (fixed code constant, never config) is reinjected every 20 tool
 iterations and before the forced-final turn. No new dependency.
+
+v1.7 fixes in-call turn-taking (§7.5) and adds two ways to stop noise reaching
+the agent. On a call, the listener and the reply shared one pjsua2 thread, so a
+reply queued behind a recording pass that had opened the instant the previous
+transcript was emitted and was only capturing the caller listening — the caller
+waited out the whole `record_seconds` cap for every answer. Deciding to speak (or
+hanging up) now aborts the pass in flight, no pass is opened while ARES has the
+floor, and the cap runs from first speech rather than from pass open. A pass that
+heard no speech is no longer transcribed at all: Whisper turns near-silence into
+stock phrases ("you"), and each phantom transcript spent a full serialized agent
+cycle ahead of the caller's real words. STT gains `vad_filter` / no
+`condition_on_previous_text`. New tool `end_call` (§6.1) lets ARES hang up, with
+an optional farewell spoken before the line drops. On the Home Assistant side,
+§7.3 gains a `blocked_entities` deny-list of `entity_id` globs, applied ahead of
+both allow-lists — a chatty integration usually sits inside a domain that is
+otherwise wanted. No new dependency.
 
 ---
 
@@ -825,6 +841,7 @@ If the service is missing from `ctx.services`, every home tool returns
 | name | params | keywords | behaviour |
 |---|---|---|---|
 | `place_call` | `message: string` | call, phone, ring, dial, urgent, reach | Instructs the SIP plugin to dial the user's configured SIP URI, speak `message` via TTS, then listen (§7.5). Returns immediately with `"Call initiated."`; the user's spoken reply arrives later as a new event. |
+| `end_call` | `farewell: string?` | hang up, hangup, end call, goodbye, bye, disconnect | Hangs up the call in progress (§7.5). `farewell` is spoken in full first, then the line drops; the session's active channel is moved off `SIP_CALL` so the final assistant turn does not fail over to PUSH. Refuses when no call is active. |
 | `send_sip_message` | `message: string` | sip, text, message, send, sms | SIP MESSAGE to the user's URI. |
 
 ---
@@ -931,8 +948,28 @@ pjsua2: account registration to the Asterisk server, plus:
 ```python
 async def send_message(uri: str, text: str) -> bool
 async def call_and_speak(uri: str, text: str, listen: bool) -> None
+async def speak_into_call(text: str) -> bool
+async def hangup() -> bool
 def on_incoming_call(cb) / def on_incoming_message(cb)
 ```
+
+**Turn-taking.** Every pjsua2 command runs on one shared worker thread, so the
+listener and the reply contend for it. Two gates keep a turn ordered:
+
+- while ARES is speaking, no recording pass is opened (and none is opened for
+  `post_speech_guard_seconds` after, so a far-end speakerphone's echo of ARES's
+  own voice is not captured as the caller's turn);
+- deciding to speak, or hanging up, **aborts any recording in flight** rather
+  than queueing behind it. Without this a reply waits out the recording pass
+  that was only ever capturing the caller listening to it.
+
+A pass that captured no speech returns nothing and is **never transcribed**:
+Whisper hallucinates stock phrases ("you", "Thank you.") out of near-silence,
+and each phantom transcript costs a full serialized agent cycle ahead of what
+the caller actually says next. STT runs with `vad_filter` on and
+`condition_on_previous_text` off for the same reason. The `record_seconds` cap
+is measured from the **first speech**, not from the moment the pass opened, so
+idle listening never clips a caller who pauses before answering.
 
 `sip/source.py` (`SIPSource`, name `sip`):
 
