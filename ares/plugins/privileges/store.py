@@ -9,6 +9,11 @@ import aiosqlite
 from ares.core.utils.ids import new_id
 
 
+# Statuses a request can no longer move out of — the point at which the outcome
+# is worth telling ARES about exactly once.
+TERMINAL_STATUSES = ("done", "failed", "denied")
+
+
 @dataclasses.dataclass
 class PrivRequest:
     """Mirrors the priv_requests table schema."""
@@ -24,6 +29,7 @@ class PrivRequest:
     created_at: str
     decided_at: str | None
     executed_at: str | None
+    notified: bool = False
 
 
 class PrivStore:
@@ -56,12 +62,40 @@ class PrivStore:
               output TEXT,
               created_at TEXT NOT NULL,
               decided_at TEXT,
-              executed_at TEXT
+              executed_at TEXT,
+              notified INTEGER NOT NULL DEFAULT 0
             )
             """
         )
 
+        await self._migrate_notified()
         await self._db.commit()
+
+    async def _migrate_notified(self) -> None:
+        """Add `notified` to a pre-existing table, back-filling old outcomes.
+
+        Before this column the source deduplicated emitted updates in an
+        in-memory set, so every daemon restart re-announced every completed
+        request as though it were new — a rejection from weeks earlier would
+        arrive as a fresh event on every boot. Existing terminal rows are
+        back-filled to notified=1: they have already been announced (repeatedly),
+        and the rows themselves are kept so the audit trail of what was
+        requested and refused stays intact.
+        """
+        cursor = await self._db.execute("PRAGMA table_info(priv_requests)")
+        cols = {row["name"] for row in await cursor.fetchall()}
+        await cursor.close()
+        if "notified" in cols:
+            return
+
+        await self._db.execute(
+            "ALTER TABLE priv_requests ADD COLUMN notified INTEGER NOT NULL DEFAULT 0"
+        )
+        placeholders = ",".join("?" * len(TERMINAL_STATUSES))
+        await self._db.execute(
+            f"UPDATE priv_requests SET notified = 1 WHERE status IN ({placeholders})",
+            TERMINAL_STATUSES,
+        )
 
     def _now(self) -> str:
         """Return current UTC time in ISO8601 format."""
@@ -81,6 +115,7 @@ class PrivStore:
             created_at=row["created_at"],
             decided_at=row["decided_at"],
             executed_at=row["executed_at"],
+            notified=bool(row["notified"]),
         )
 
     async def create(
@@ -131,6 +166,36 @@ class PrivStore:
         rows = await cursor.fetchall()
         await cursor.close()
         return [self._row_to_priv_request(row) for row in rows]
+
+    async def list_unnotified(self) -> list[PrivRequest]:
+        """Terminal requests whose outcome has not been announced yet.
+
+        Survives restarts (unlike the in-memory set this replaces), so a
+        completed request is reported exactly once for the life of the row.
+        """
+        if self._db is None:
+            raise RuntimeError("PrivStore not initialized; call await init()")
+
+        placeholders = ",".join("?" * len(TERMINAL_STATUSES))
+        cursor = await self._db.execute(
+            f"SELECT * FROM priv_requests "
+            f"WHERE notified = 0 AND status IN ({placeholders}) "
+            f"ORDER BY created_at",
+            TERMINAL_STATUSES,
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._row_to_priv_request(row) for row in rows]
+
+    async def mark_notified(self, id: str) -> None:
+        """Record that this request's outcome has been announced."""
+        if self._db is None:
+            raise RuntimeError("PrivStore not initialized; call await init()")
+
+        await self._db.execute(
+            "UPDATE priv_requests SET notified = 1 WHERE id = ?", (id,)
+        )
+        await self._db.commit()
 
     async def get(self, id: str) -> PrivRequest | None:
         """Get a privilege request by id."""

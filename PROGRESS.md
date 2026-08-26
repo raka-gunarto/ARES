@@ -361,6 +361,24 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-08-26: privilege updates announced exactly once, persistently. Spec §16.1 defines the
+  `priv_requests` schema but is silent on delivery semantics, so this is an implementation
+  detail. Live-trace evidence: request `824b1940` (a package_install rejected 2026-07-14) was
+  re-emitted as a fresh `privilege_update` event on **11 separate occasions** through
+  2026-08-14, and `1c674378` twice — the last pair firing at 09:32 UTC on 14 Aug, the exact
+  minute of the subnet-change restart. Cause: `PrivilegeSource._seen` was an in-memory set
+  rebuilt empty every process start, while the queue DB is persistent and terminal rows are
+  never pruned, so each boot replayed the entire completed history. ARES had no way to tell
+  these from real news (its 2026-08-14 note reads "Not traced to any user request"). Fix:
+  `notified INTEGER NOT NULL DEFAULT 0` on `priv_requests`, with an idempotent `ALTER TABLE`
+  migration in `PrivStore.init()` that back-fills existing terminal rows to 1 — rows are KEPT
+  so the audit trail of what was requested and refused survives. New `list_unnotified()` /
+  `mark_notified()`; the source emits then marks (at-least-once: a duplicate is cheaper than a
+  lost outcome) and no longer keeps in-process state. Broker is unaffected — it addresses
+  `priv_requests` by named column in every SELECT/UPDATE, never positionally. 8 new tests,
+  including a simulated restart and a guard that a re-run of `init()` cannot silence a genuinely
+  un-announced outcome.
+
 - 2026-08-26: HA timeouts — spec §7.3 is silent on HTTP timeouts, so this is an
   implementation detail, not a spec change. Live-trace evidence: 63 of 92 `control_device`
   failures (68%) took *exactly* 10.0s — the `httpx.AsyncClient(timeout=10.0)` in `HAService` —

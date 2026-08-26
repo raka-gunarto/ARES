@@ -302,3 +302,142 @@ class TestListFilter:
         # Check all list
         all_reqs = await store.list()
         assert len(all_reqs) == 2
+
+
+# ---- notified flag: outcomes announced exactly once, across restarts -------
+#
+# Regression for the live bug: PrivilegeSource deduplicated in an in-memory set,
+# so every daemon restart re-emitted every completed request. One rejected
+# package_install from 2026-07-14 was re-announced on 11 separate boots.
+
+import sqlite3  # noqa: E402
+
+from ares.core.event import EventBus  # noqa: E402
+from ares.plugins.privileges.source import PrivilegeSource  # noqa: E402
+from ares.plugins.privileges.store import TERMINAL_STATUSES  # noqa: E402
+
+
+async def _completed(store, status="failed"):
+    r = await store.create("primary", "package_install", "chromium", "demo")
+    if status == "denied":
+        await store.deny(r.id)
+    else:
+        await store.approve(r.id)
+        await store.mark_executing(r.id)
+        await store.mark_failed(r.id, 1, "rejected: not allowlisted")
+    return r
+
+
+async def test_new_request_is_unnotified_then_marked(tmp_path):
+    store = PrivStore(tmp_path / "p.db")
+    await store.init()
+    r = await _completed(store)
+
+    assert [x.id for x in await store.list_unnotified()] == [r.id]
+    await store.mark_notified(r.id)
+    assert await store.list_unnotified() == []
+    assert (await store.get(r.id)).notified is True
+    await store.aclose()
+
+
+async def test_pending_requests_are_never_unnotified(tmp_path):
+    """Only terminal outcomes are announced; a pending request is not news."""
+    store = PrivStore(tmp_path / "p.db")
+    await store.init()
+    await store.create("primary", "package_install", "go", "demo")
+    assert await store.list_unnotified() == []
+    await store.aclose()
+
+
+async def test_denied_counts_as_terminal(tmp_path):
+    store = PrivStore(tmp_path / "p.db")
+    await store.init()
+    r = await _completed(store, status="denied")
+    assert [x.id for x in await store.list_unnotified()] == [r.id]
+    await store.aclose()
+
+
+async def test_source_emits_once_and_survives_restart(tmp_path):
+    """The actual bug: a second daemon must not replay old outcomes."""
+    db = tmp_path / "p.db"
+    store = PrivStore(db)
+    await store.init()
+    r = await _completed(store)
+
+    bus = EventBus()
+    src = PrivilegeSource(bus, {}, store)
+    await src._poll_once()
+    assert bus.qsize() == 1
+    ev = await bus.get()
+    assert ev.payload["id"] == r.id
+
+    # Same process, next poll: nothing new.
+    await src._poll_once()
+    assert bus.qsize() == 0
+    await store.aclose()
+
+    # Simulate a daemon restart: fresh store + fresh source over the same file.
+    store2 = PrivStore(db)
+    await store2.init()
+    bus2 = EventBus()
+    src2 = PrivilegeSource(bus2, {}, store2)
+    await src2._poll_once()
+    assert bus2.qsize() == 0, "restart replayed an already-announced outcome"
+    await store2.aclose()
+
+
+async def test_migration_backfills_old_rows_and_keeps_audit_trail(tmp_path):
+    """An existing DB gains the column; history stays, but goes quiet."""
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE priv_requests (
+             id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
+             command TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
+             exit_code INTEGER, output TEXT, created_at TEXT NOT NULL,
+             decided_at TEXT, executed_at TEXT)"""
+    )
+    conn.executemany(
+        "INSERT INTO priv_requests (id,user_id,kind,command,reason,status,created_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        [
+            ("old1", "primary", "package_install", "chromium", "r", "failed", "2026-07-14"),
+            ("old2", "primary", "package_install", "go", "r", "failed", "2026-08-10"),
+            ("live", "primary", "package_install", "curl", "r", "pending", "2026-08-26"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    store = PrivStore(db)
+    await store.init()
+
+    # Old outcomes are silenced...
+    assert await store.list_unnotified() == []
+    # ...but the audit trail is intact, and the pending row is untouched.
+    all_ids = {r.id for r in await store.list()}
+    assert all_ids == {"old1", "old2", "live"}
+    assert (await store.get("old1")).notified is True
+    assert (await store.get("live")).notified is False
+    assert (await store.get("live")).status == "pending"
+    await store.aclose()
+
+
+async def test_migration_is_idempotent(tmp_path):
+    """init() runs on every boot; it must not re-migrate or re-silence."""
+    db = tmp_path / "p.db"
+    store = PrivStore(db)
+    await store.init()
+    r = await _completed(store)
+    await store.aclose()
+
+    store2 = PrivStore(db)
+    await store2.init()  # column already exists -> no back-fill
+    assert [x.id for x in await store2.list_unnotified()] == [r.id], (
+        "a re-run of init() wrongly back-filled a genuinely un-announced outcome"
+    )
+    await store2.aclose()
+
+
+def test_terminal_statuses_match_the_schema_check():
+    assert set(TERMINAL_STATUSES) == {"done", "failed", "denied"}
