@@ -361,6 +361,19 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-08-26: HA timeouts — spec §7.3 is silent on HTTP timeouts, so this is an
+  implementation detail, not a spec change. Live-trace evidence: 63 of 92 `control_device`
+  failures (68%) took *exactly* 10.0s — the `httpx.AsyncClient(timeout=10.0)` in `HAService` —
+  and every httpx timeout exception has an empty `str()`, so the model received a bare
+  `"Home error: "` and could not distinguish a timeout from a refused connection. It retried
+  blindly against hardware that had usually already applied the command. Two fixes:
+  (1) split the timeout — `READ_TIMEOUT=10.0` (reads stay fail-fast) vs `SERVICE_TIMEOUT=45.0`
+  passed per-request on `call_service`, since a service call waits on the integration (a
+  cloud-backed AC is slow) and a premature timeout is worse than a slow reply;
+  (2) `_describe_error()` in `home_tools.py` never renders empty — timeouts get an explicit
+  "may still have been applied — check with get_home_state before sending it again", other
+  empty-str exceptions fall back to their class name. 6 new tests.
+
 - 2026-07-14 (v1.4): operator authorised promoting memory recall/store tools to core.
   Rationale: proactive memory use was blocked by a discovery step — ARES had to `search_tools`
   for memory before it could recall/store, so it rarely did unprompted. Making `memory_grep/

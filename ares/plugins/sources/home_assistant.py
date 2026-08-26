@@ -43,6 +43,13 @@ _PRIORITY_MAP: dict[str, Priority] = {
 
 _SNAPSHOT_TTL = 30.0
 
+# Reads are local and should fail fast. Service calls actuate real hardware and
+# HA does not answer until the integration does — a cloud-backed AC routinely
+# needs longer than a read, and a premature timeout is worse than a slow reply
+# because the command has usually been applied by then anyway.
+READ_TIMEOUT = 10.0
+SERVICE_TIMEOUT = 45.0
+
 # SECURITY (§14, PATCH-3): outbound control is NOT gated by the inbound event
 # allow-list. Without this, the LLM could unlock doors / disarm the alarm from a
 # poisoned memory note or crafted message. These `domain.service` pairs are
@@ -80,7 +87,7 @@ class HAService:
         self.blocked_controls = frozenset(
             blocked_controls if blocked_controls is not None else DEFAULT_BLOCKED_CONTROLS
         )
-        self._client = httpx.AsyncClient(timeout=10.0)
+        self._client = httpx.AsyncClient(timeout=READ_TIMEOUT)
         self._snap_cache: str | None = None
         self._snap_ts: float = 0.0
 
@@ -120,6 +127,7 @@ class HAService:
             f"{self.rest_url}/api/services/{domain}/{service}",
             json=body,
             headers=self._headers(),
+            timeout=SERVICE_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json()

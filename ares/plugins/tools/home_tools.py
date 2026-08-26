@@ -2,10 +2,31 @@ from __future__ import annotations
 
 import typing
 
+import httpx
+
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 
 if typing.TYPE_CHECKING:
     pass
+
+
+def _describe_error(e: Exception) -> str:
+    """Render an exception for the model, never as an empty string.
+
+    httpx's timeout/transport exceptions carry an empty `str()`, which used to
+    surface as a bare "Home error: " — the model could not tell a timeout from a
+    refused connection, so it retried blindly. A timed-out service call is the
+    dangerous case: HA may well have applied it, so say so and point at the
+    check rather than inviting a repeat.
+    """
+    if isinstance(e, httpx.TimeoutException):
+        return (
+            "timed out waiting for Home Assistant. The command may still have "
+            "been applied — check the entity with get_home_state before sending "
+            "it again."
+        )
+    text = str(e).strip()
+    return text or f"{type(e).__name__} (no detail)"
 
 
 def _fmt_attr_value(value: typing.Any, limit: int = 200) -> str:
@@ -123,7 +144,7 @@ class GetHomeState(BaseTool):
                 return ToolResult(True, summary)
 
         except Exception as e:
-            return ToolResult(False, f"Home error: {e}")
+            return ToolResult(False, f"Home error: {_describe_error(e)}")
 
 
 class ControlDevice(BaseTool):
@@ -230,7 +251,7 @@ class ControlDevice(BaseTool):
             return ToolResult(True, f"{action} sent to {entity_id}.")
 
         except Exception as e:
-            return ToolResult(False, f"Home error: {e}")
+            return ToolResult(False, f"Home error: {_describe_error(e)}")
 
 
 class ListDevices(BaseTool):
@@ -280,7 +301,7 @@ class ListDevices(BaseTool):
             return ToolResult(True, content)
 
         except Exception as e:
-            return ToolResult(False, f"Home error: {e}")
+            return ToolResult(False, f"Home error: {_describe_error(e)}")
 
 
 class CameraSnapshot(BaseTool):
@@ -319,7 +340,7 @@ class CameraSnapshot(BaseTool):
             return ToolResult(True, f"Snapshot saved: {path} ({size} bytes)")
 
         except Exception as e:
-            return ToolResult(False, f"Home error: {e}")
+            return ToolResult(False, f"Home error: {_describe_error(e)}")
 
 
 HOME_TOOLS: list[BaseTool] = [

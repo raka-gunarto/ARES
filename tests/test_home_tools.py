@@ -155,3 +155,61 @@ def test_fmt_attr_value_truncates():
     long = list(range(1000))
     out = _fmt_attr_value(long, limit=50)
     assert out.endswith("…") and len(out) == 51
+
+
+# ---- error reporting (the 63 empty "Home error: " failures) ----------------
+
+import httpx  # noqa: E402
+
+from ares.plugins.sources.home_assistant import READ_TIMEOUT, SERVICE_TIMEOUT  # noqa: E402
+from ares.plugins.tools.home_tools import _describe_error  # noqa: E402
+
+
+def test_timeout_never_renders_empty() -> None:
+    """httpx timeouts stringify to '' — they must not reach the model bare."""
+    for exc in (
+        httpx.ReadTimeout(""),
+        httpx.ConnectTimeout(""),
+        httpx.PoolTimeout(""),
+        httpx.WriteTimeout(""),
+    ):
+        msg = _describe_error(exc)
+        assert msg.strip()
+        assert "timed out" in msg
+
+
+def test_timeout_message_warns_command_may_have_applied() -> None:
+    """A timed-out service call is not proof it did not happen."""
+    msg = _describe_error(httpx.ReadTimeout(""))
+    assert "may still have been applied" in msg
+    assert "get_home_state" in msg
+
+
+def test_empty_non_timeout_error_still_names_the_type() -> None:
+    assert _describe_error(httpx.ConnectError("")) == "ConnectError (no detail)"
+
+
+def test_ordinary_error_text_passes_through() -> None:
+    assert _describe_error(ValueError("bad entity")) == "bad entity"
+
+
+async def test_control_device_reports_timeout_usefully() -> None:
+    """End-to-end: a timing-out service call yields an actionable message."""
+
+    class _TimeoutHA(_FakeHAService):
+        async def call_service(self, domain, service, entity_id, data):
+            raise httpx.ReadTimeout("")
+
+    svc = _TimeoutHA(_CLIMATE)
+    result = await ControlDevice().run(
+        _ctx(svc), entity_id="climate.living_room", action="set_hvac_mode",
+        data={"hvac_mode": "off"},
+    )
+    assert not result.ok
+    assert result.content != "Home error: "
+    assert "timed out" in result.content
+
+
+def test_service_timeout_exceeds_read_timeout() -> None:
+    """Service calls actuate hardware; they must get more room than reads."""
+    assert SERVICE_TIMEOUT > READ_TIMEOUT
