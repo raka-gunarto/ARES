@@ -148,8 +148,20 @@ def process_once(config: dict) -> None:
 
         argv = build_argv(kind, command)
         if argv is None:
+            # Distinct from the allowlist rejection above: this one means the
+            # request is malformed for its kind, and widening the allowlist will
+            # NOT make it pass. Saying "not allowlisted" here sent operators
+            # hunting through broker.json for a config problem that wasn't there.
             log.info("rejecting %s (%s): no argv built", req_id, kind)
-            mark_failed(db_path, req_id, output="rejected: not allowlisted")
+            mark_failed(
+                db_path,
+                req_id,
+                output=(
+                    f"rejected: malformed for kind '{kind}'. package_install "
+                    "takes exactly ONE lowercase package name (no lists, spaces, "
+                    "or flags) — file one request per package."
+                ),
+            )
             continue
 
         log.info("executing %s: %r", req_id, argv)

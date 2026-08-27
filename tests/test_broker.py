@@ -371,3 +371,100 @@ def test_process_once_multiple_requests(temp_db, monkeypatch, fake_run_command):
     assert len(fake_run_command.calls) == 2
     assert fake_run_command.calls[0] == ["apt-get", "install", "-y", "git"]
     assert fake_run_command.calls[1] == ["systemctl", "restart", "ares"]
+
+
+# ============================================================================
+# Rejection messages must distinguish policy from malformed input
+# ============================================================================
+
+
+def test_malformed_request_is_not_reported_as_allowlist_failure(
+    temp_db, monkeypatch, fake_run_command
+):
+    """A comma-list package passes a wide allowlist but fails build_argv.
+
+    It must NOT say "not allowlisted" — that sends the operator editing
+    broker.json for a problem widening cannot fix.
+    """
+    wide = {"package_install": [r"^.*$"], "service_action": [], "command": []}
+    conn = sqlite3.connect(temp_db)
+    conn.execute(
+        "INSERT INTO priv_requests "
+        "(id, user_id, kind, command, reason, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("req-ml", "user1", "package_install", "python3, chromium, selenium",
+         "scraper", "approved", "2026-08-27T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    fake_run_command.reset()
+    monkeypatch.setattr(broker, "run_command", fake_run_command)
+    broker.process_once({"db_path": temp_db, "allow": wide})
+
+    conn = sqlite3.connect(temp_db)
+    row = conn.execute(
+        "SELECT status, output FROM priv_requests WHERE id='req-ml'"
+    ).fetchone()
+    conn.close()
+
+    assert row[0] == "failed"
+    assert "not allowlisted" not in row[1]
+    assert "one request per package" in row[1]
+    assert len(fake_run_command.calls) == 0, "malformed input must never execute"
+
+
+def test_wide_allowlist_still_blocks_flag_injection(
+    temp_db, monkeypatch, fake_run_command
+):
+    """Widening the allowlist must not enable argv/flag injection."""
+    wide = {"package_install": [r"^.*$"], "service_action": [], "command": []}
+    conn = sqlite3.connect(temp_db)
+    for i, cmd in enumerate(
+        ["-o APT::Get::AllowUnauthenticated=true", "--force-yes", "/tmp/evil.deb",
+         "evil; rm -rf /", "a b"]
+    ):
+        conn.execute(
+            "INSERT INTO priv_requests "
+            "(id, user_id, kind, command, reason, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (f"inj-{i}", "user1", "package_install", cmd, "x", "approved",
+             "2026-08-27T00:00:00+00:00"),
+        )
+    conn.commit()
+    conn.close()
+
+    fake_run_command.reset()
+    monkeypatch.setattr(broker, "run_command", fake_run_command)
+    broker.process_once({"db_path": temp_db, "allow": wide})
+
+    assert len(fake_run_command.calls) == 0, "flag/shell injection reached argv"
+    conn = sqlite3.connect(temp_db)
+    rows = conn.execute(
+        "SELECT status FROM priv_requests WHERE id LIKE 'inj-%'"
+    ).fetchall()
+    conn.close()
+    assert all(r[0] == "failed" for r in rows)
+
+
+def test_wide_allowlist_permits_an_ordinary_package(
+    temp_db, monkeypatch, fake_run_command
+):
+    """The point of widening: a normal package name now reaches apt-get."""
+    wide = {"package_install": [r"^[a-z0-9][a-z0-9+.\-]*$"]}
+    conn = sqlite3.connect(temp_db)
+    conn.execute(
+        "INSERT INTO priv_requests "
+        "(id, user_id, kind, command, reason, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("ok-1", "user1", "package_install", "chromium", "browser", "approved",
+         "2026-08-27T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    fake_run_command.reset()
+    monkeypatch.setattr(broker, "run_command", fake_run_command)
+    broker.process_once({"db_path": temp_db, "allow": wide})
+
+    assert fake_run_command.calls == [["apt-get", "install", "-y", "chromium"]]

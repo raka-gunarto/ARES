@@ -22,7 +22,12 @@ class RequestPrivilege(BaseTool):
             },
             "command": {
                 "type": "string",
-                "description": "The command or package to request",
+                "description": (
+                    "The package or command to request. For package_install this "
+                    "is exactly ONE lowercase package name (e.g. 'chromium') — "
+                    "never a list, and never flags. Need several packages? File "
+                    "one request per package."
+                ),
             },
             "reason": {
                 "type": "string",
