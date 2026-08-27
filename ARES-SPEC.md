@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.7
+# ARES — Implementation Specification v1.8
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -67,6 +67,20 @@ an optional farewell spoken before the line drops. On the Home Assistant side,
 §7.3 gains a `blocked_entities` deny-list of `entity_id` globs, applied ahead of
 both allow-lists — a chatty integration usually sits inside a domain that is
 otherwise wanted. No new dependency.
+
+v1.8 adds `fetch_page` (§6.1): a headless-browser page fetch, and promotes it and
+`run_shell` into the always-loaded core set (§5, now twelve tools). Chromium is
+driven as an **external binary** exactly as §12 already sanctions for Piper, grep
+and git, so **no Python dependency is added** and §12 stands unamended. A browser
+is the largest untrusted-input surface in the system, so the risk is handled in
+code rather than left to the model: it executes only as the sandbox user through
+the single §15 runner, in a throwaway profile discarded after each fetch; every
+resolved address must be global, so the host-private link (Home Assistant, the
+dashboard, the updater hook), loopback and link-local are refused *before*
+Chromium starts; the vetted address is then pinned with `--host-resolver-rules`
+so a rebinding DNS answer cannot swap it; and the URL is shell-quoted into a
+fixed argv. Returned text is capped and banner-labelled as untrusted data, which
+the frozen RULES already classes as non-instruction.
 
 ---
 
@@ -767,9 +781,12 @@ class TaskStore:
 ## 5. Core Tools (always in context)
 
 Six tools defined in `plugins/tools/core_tools.py`, plus (since v1.4) the four
-recall/store memory tools defined in `plugins/tools/memory_tools.py` — ten tools
-total, all `core = True`, all always loaded into the LLM context (no
-`search_tools` step required).
+recall/store memory tools defined in `plugins/tools/memory_tools.py`, plus
+(since v1.8) `run_shell` and `fetch_page` — twelve tools total, all
+`core = True`, all always loaded into the LLM context (no `search_tools` step
+required). `run_shell` (§15) and `fetch_page` (§6.1) are core because both are
+routine and both were being missed behind the discovery step; neither gains any
+privilege from the promotion — both still execute only as the sandbox user.
 
 | name | parameters (JSON Schema properties) | behaviour |
 |---|---|---|
@@ -841,6 +858,7 @@ If the service is missing from `ctx.services`, every home tool returns
 | name | params | keywords | behaviour |
 |---|---|---|---|
 | `place_call` | `message: string` | call, phone, ring, dial, urgent, reach | Instructs the SIP plugin to dial the user's configured SIP URI, speak `message` via TTS, then listen (§7.5). Returns immediately with `"Call initiated."`; the user's spoken reply arrives later as a new event. |
+| `fetch_page` | `url: string`, `raw_html: boolean?`, `timeout_s: integer?` | browse, web, page, url, fetch, site, website, internet, lookup, scrape, html | Renders a **public** http(s) page with a headless Chromium (JavaScript runs) and returns its visible text, capped at 6000 chars and prefixed with an untrusted-data banner. `raw_html` returns the DOM instead. Runs as the sandbox user through the §15 runner in a throwaway profile — never as the daemon uid. Every resolved address must be global: private, loopback and link-local targets are refused before launch (the daemon shares a link with Home Assistant, the dashboard and the updater hook), and the vetted address is pinned via `--host-resolver-rules` so DNS rebinding cannot redirect the fetch. Chromium is an external binary, so this adds **no** dependency under §12. |
 | `end_call` | `farewell: string?` | hang up, hangup, end call, goodbye, bye, disconnect | Hangs up the call in progress (§7.5). `farewell` is spoken in full first, then the line drops; the session's active channel is moved off `SIP_CALL` so the final assistant turn does not fail over to PUSH. Refuses when no call is active. |
 | `send_sip_message` | `message: string` | sip, text, message, send, sms | SIP MESSAGE to the user's URI. |
 
@@ -1109,6 +1127,10 @@ plugins:
     workdir: /home/ares-sbx          # dev: any scratch dir
     timeout_default_s: 30
     timeout_max_s: 120
+  browser:
+    enabled: false                   # fetch_page; needs a chromium binary
+    browser_timeout_default_s: 30    # sandbox_user/workdir inherited from `shell`
+    browser_timeout_max_s: 90
   privileges:
     enabled: true
     db_path: instance/privq.db       # production: /var/lib/ares/privq.db

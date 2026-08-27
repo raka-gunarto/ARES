@@ -104,6 +104,7 @@ from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
 from ares.plugins.tools.selfedit_tools import PRCache, build_selfedit_tools
+from ares.plugins.tools.browser_tools import build_browser_tools
 from ares.plugins.tools.shell_tools import build_shell_tools
 from ares.plugins.tools.task_tools import TASK_TOOLS
 from ares.plugins.tools.time_tools import build_time_tools
@@ -226,6 +227,15 @@ async def main(config_path: str) -> None:
     shell_config = config.plugins.get("shell", {})
     if shell_config.get("enabled"):
         for t in build_shell_tools(shell_config):
+            registry.register(t)
+
+    # The browser reuses the shell plugin's sandbox identity: one sandbox user,
+    # one audited sudo entry point (§15). Enabled via its own `browser` block so
+    # it can be turned off without giving up the shell.
+    browser_config = config.plugins.get("browser", {})
+    if browser_config.get("enabled"):
+        merged = {**shell_config, **browser_config}
+        for t in build_browser_tools(merged):
             registry.register(t)
 
     pr_cache = PRCache()

@@ -51,7 +51,7 @@ class RunShell(BaseTool):
         },
         "required": ["command"],
     }
-    core = False
+    core = True  # always in context (§5): promoted from discoverable-only
 
     def __init__(
         self,

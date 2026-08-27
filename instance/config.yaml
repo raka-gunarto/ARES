@@ -132,6 +132,13 @@ plugins:
     workdir: /home/ares-sbx          # dev: any scratch dir
     timeout_default_s: 30
     timeout_max_s: 120
+  browser:
+    enabled: false                   # needs a chromium binary in the sandbox
+    # Inherits sandbox_user/workdir from the `shell` block above; set
+    # browser_binary to override the default `chromium`.
+    browser_timeout_default_s: 30
+    browser_timeout_max_s: 90
+
   privileges:
     enabled: true
     db_path: instance/privq.db       # production: /var/lib/ares/privq.db

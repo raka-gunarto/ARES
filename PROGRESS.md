@@ -1,6 +1,6 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.7. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.8. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
@@ -360,6 +360,31 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] spec §18/§14/§8 + DEPLOYMENT updated; full suite 220 passed
 
 ## Decisions
+
+- 2026-08-27 (v1.8, operator-authorised): headless browser `fetch_page` + `run_shell` and
+  `fetch_page` promoted to core (§5, twelve tools). **No dependency added** — §12 says
+  "complete list — nothing else", and playwright/selenium would have violated it, so Chromium
+  is driven as an external binary via argv, the arrangement §12 already sanctions for Piper,
+  grep and git. Security decisions taken here (operator delegated them):
+   * Runs ONLY as the sandbox user, through the single existing §15 `ares-sbx-runner` sudo
+     entry point — no second privilege path was created. Prod refuses to run it as the daemon
+     uid, same tripwire as `run_shell`.
+   * SSRF was the real risk: the daemon shares a /30 with Home Assistant (10.16.0.1:8123), the
+     dashboard (10.16.0.2:8788) and the updater hook (:8790). Every resolved address must be
+     `is_global`; ANY private answer rejects the whole name (split-horizon bypass). The vetted
+     address is then pinned via `--host-resolver-rules=MAP host ip` so a rebinding second
+     answer cannot redirect the fetch after the check.
+   * URL is shell-quoted into a fixed argv; scheme restricted to http/https; whitespace and
+     control characters refused (whitespace is how a URL becomes a second argv word).
+   * Fresh `mktemp -d` profile per fetch, `rm -rf`'d after — no cookies/tokens persist.
+     `--no-sandbox` is set because the microVM lacks user namespaces; acceptable because the
+     process is already unprivileged and profile-isolated, but it IS a real weakening worth
+     revisiting if user namespaces become available.
+   * Output capped at 6000 chars and prefixed with an untrusted-data banner; the frozen RULES
+     already class tool output as data, so no RULES change was needed (and none is possible
+     live-only).
+  25 new tests, incl. 8 private-address cases, split-horizon DNS, scheme/whitespace refusal,
+  shell-quoting, profile teardown and the prod uid tripwire.
 
 - 2026-08-26: privilege updates announced exactly once, persistently. Spec §16.1 defines the
   `priv_requests` schema but is silent on delivery semantics, so this is an implementation
