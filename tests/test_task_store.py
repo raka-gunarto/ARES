@@ -248,3 +248,95 @@ class TestHistory:
 
         assert len(history) == 1
         assert history[0].id == task2.id
+
+
+# ---- recurring checks for monitoring tasks --------------------------------
+#
+# Before this, a `monitoring` task had no clock: it was reconsidered only when
+# an unrelated event happened to wake the agent. The live trace measured one
+# check in a nine-hour window against a promise of "every 30 minutes".
+
+from datetime import timedelta  # noqa: E402
+
+from ares.core.tasks.store import MIN_CHECK_INTERVAL_S, check_schedule  # noqa: E402
+
+
+def test_check_schedule_is_empty_without_an_interval():
+    """No interval must stay the default: unarmed tasks behave as before."""
+    assert check_schedule(None) == {}
+    assert check_schedule(0) == {}
+
+
+def test_check_schedule_enforces_the_floor():
+    """A check costs a full serialized agent cycle; 1-minute polls are refused."""
+    s = check_schedule(60)
+    assert s["check_interval_s"] == MIN_CHECK_INTERVAL_S
+    s = check_schedule(1800)
+    assert s["check_interval_s"] == 1800
+
+
+async def test_armed_task_becomes_due_and_unarmed_never_does(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    await store.init()
+    now = datetime.now(timezone.utc)
+
+    armed = await store.create(
+        "primary", "monitoring", title="watch temps",
+        data=check_schedule(1800, first_at=now - timedelta(seconds=1)),
+    )
+    await store.create("primary", "monitoring", title="passive note")
+
+    due = await store.list_checks_due(now)
+    assert [t.id for t in due] == [armed.id]
+    await store.aclose()
+
+
+async def test_future_check_is_not_yet_due(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    await store.init()
+    now = datetime.now(timezone.utc)
+    await store.create(
+        "primary", "monitoring", title="later",
+        data=check_schedule(1800, first_at=now + timedelta(minutes=10)),
+    )
+    assert await store.list_checks_due(now) == []
+    await store.aclose()
+
+
+async def test_closed_task_stops_being_checked(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    await store.init()
+    now = datetime.now(timezone.utc)
+    t = await store.create(
+        "primary", "monitoring", title="watch",
+        data=check_schedule(1800, first_at=now - timedelta(seconds=1)),
+    )
+    assert len(await store.list_checks_due(now)) == 1
+    await store.close(t.id, "done")
+    assert await store.list_checks_due(now) == []
+    await store.aclose()
+
+
+async def test_reminders_are_never_returned_as_checks(tmp_path):
+    """reminder_pending fires once via list_due; it must not double up here."""
+    store = TaskStore(tmp_path / "t.db")
+    await store.init()
+    now = datetime.now(timezone.utc)
+    await store.create(
+        "primary", "reminder_pending", title="ping", due_at=now.isoformat(),
+        data=check_schedule(1800, first_at=now - timedelta(seconds=1)),
+    )
+    assert await store.list_checks_due(now) == []
+    await store.aclose()
+
+
+async def test_unparseable_next_check_is_skipped_not_fatal(tmp_path):
+    store = TaskStore(tmp_path / "t.db")
+    await store.init()
+    now = datetime.now(timezone.utc)
+    await store.create(
+        "primary", "monitoring", title="bad",
+        data={"check_interval_s": 1800, "next_check_at": "not-a-time"},
+    )
+    assert await store.list_checks_due(now) == []
+    await store.aclose()

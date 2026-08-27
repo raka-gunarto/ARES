@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ares.core.tasks.store import check_schedule
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 
 
@@ -146,6 +147,18 @@ class CreateTask(BaseTool):
                     "description of the event that resolves it. Omit for plain reminders."
                 ),
             },
+            "check_every_minutes": {
+                "type": "integer",
+                "description": (
+                    "Re-check this task on a timer, every N minutes (minimum 5). "
+                    "REQUIRED if you intend to watch something on your own — without "
+                    "it a monitoring task is only a passive note you happen to "
+                    "reconsider when some unrelated event wakes you, which may be "
+                    "hours or never. Set it whenever you tell someone you will keep "
+                    "checking. Combine with due_at to stop checking at a given time. "
+                    "Ignored for reminder_pending, which fires once at due_at."
+                ),
+            },
         },
         "required": ["type", "title"]
     }
@@ -165,16 +178,40 @@ class CreateTask(BaseTool):
                     "context and call create_task again."
                 ),
             )
+        # A reminder fires once at due_at; a recurring check would double up.
+        interval_min = kwargs.get("check_every_minutes")
+        schedule = {}
+        if interval_min and kwargs["type"] != "reminder_pending":
+            schedule = check_schedule(int(interval_min) * 60)
+
         task = await ctx.tasks.create(
             ctx.user_id,
             type=kwargs["type"],
             title=kwargs["title"],
             detail=kwargs.get("detail", ""),
             due_at=due_at,
-            trigger=kwargs.get("trigger")
+            trigger=kwargs.get("trigger"),
+            data=schedule or None,
         )
         when = f" (due {due_at})" if due_at else ""
-        return ToolResult(ok=True, content=f"Task {task.id} created{when}.")
+        if schedule:
+            every = schedule["check_interval_s"] // 60
+            until = f", stopping at {due_at}" if due_at else ""
+            return ToolResult(
+                ok=True,
+                content=(
+                    f"Task {task.id} created; I will re-check it every {every} "
+                    f"minutes{until}."
+                ),
+            )
+        note = ""
+        if kwargs["type"] == "monitoring":
+            note = (
+                " NOTE: no timer set — this is a passive note, not an active watch. "
+                "Do not tell anyone you will keep checking. Pass check_every_minutes "
+                "if you meant to watch it."
+            )
+        return ToolResult(ok=True, content=f"Task {task.id} created{when}.{note}")
 
 
 class CloseTask(BaseTool):

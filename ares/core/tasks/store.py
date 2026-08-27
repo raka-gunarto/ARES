@@ -31,6 +31,28 @@ def _parse_iso_utc(value: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+# A check costs a full agent cycle (an LLM call, serialized behind every other
+# event for this user), so a model asking to poll every minute would crowd out
+# real work. Five minutes is the floor.
+MIN_CHECK_INTERVAL_S = 300
+
+
+def check_schedule(interval_s: int | None, first_at: datetime | None = None) -> dict:
+    """Build the `data` fields that arm a task's recurring check.
+
+    Returns an empty dict for a falsy interval, so "no schedule" stays the
+    default and an unarmed task behaves exactly as it always has.
+    """
+    if not interval_s:
+        return {}
+    interval_s = max(int(interval_s), MIN_CHECK_INTERVAL_S)
+    start = first_at or datetime.now(timezone.utc)
+    return {
+        "check_interval_s": interval_s,
+        "next_check_at": start.isoformat(),
+    }
+
+
 @dataclasses.dataclass
 class Task:
     """Mirrors the tasks table schema."""
@@ -241,6 +263,40 @@ class TaskStore:
         rows = await cursor.fetchall()
         await cursor.close()
         return [self._row_to_task(row) for row in rows]
+
+    async def list_checks_due(self, now: datetime) -> list[Task]:
+        """Open tasks whose recurring check is due at or before `now`.
+
+        A `monitoring` task used to have no clock of its own: it was only ever
+        reconsidered when some unrelated event happened to wake the agent, so a
+        promise to "check every 30 minutes" produced whatever checks the event
+        stream happened to supply — measured once at one check in nine hours.
+        Tasks armed with `check_interval_s` now get a real cadence.
+
+        The schedule lives in the `data` blob (`check_interval_s`,
+        `next_check_at`), the same place the reminder loop already keeps its
+        `fired` flag, so no schema change is required. Open tasks are few, so
+        the due filter is applied in Python rather than in SQL.
+        """
+        if self._db is None:
+            raise RuntimeError("TaskStore not initialized; call await init()")
+
+        cursor = await self._db.execute(
+            "SELECT * FROM tasks WHERE status = 'open' AND type != 'reminder_pending'"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+
+        due: list[Task] = []
+        for row in rows:
+            task = self._row_to_task(row)
+            if not task.data.get("check_interval_s"):
+                continue
+            when = _parse_iso_utc(task.data.get("next_check_at"))
+            if when is not None and when <= now:
+                due.append(task)
+        due.sort(key=lambda t: t.data.get("next_check_at") or "")
+        return due
 
     async def list_due(self, now: datetime) -> list[Task]:
         """List open reminder_pending tasks due at or before `now`.

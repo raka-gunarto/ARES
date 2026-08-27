@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.8
+# ARES — Implementation Specification v1.9
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -67,6 +67,19 @@ an optional farewell spoken before the line drops. On the Home Assistant side,
 §7.3 gains a `blocked_entities` deny-list of `entity_id` globs, applied ahead of
 both allow-lists — a chatty integration usually sits inside a domain that is
 otherwise wanted. No new dependency.
+
+v1.9 gives `monitoring` tasks a real clock (§7.2). They previously had none: the
+scheduler only ever fired `reminder_pending`, so a monitoring task was a passive
+note that the agent reconsidered only when some unrelated event woke it — the live
+trace measured a task promising "every 30 minutes" receiving exactly one check in
+nine hours, while the agent told the user it would keep checking and notify them.
+`create_task` gains `check_every_minutes`, which arms `data.check_interval_s` /
+`data.next_check_at` (stored in the existing `data` blob, so no schema change), and
+the 60 s scheduler pass emits a re-arming NORMAL `task_check` for each armed task
+that is due. `due_at` bounds the watch and the last check is flagged `final`.
+Unarmed tasks behave exactly as before, and `create_task` now says so explicitly
+when a monitoring task is created without a timer, so the agent stops promising a
+cadence nothing backs.
 
 v1.8 adds `fetch_page` (§6.1): a headless-browser page fetch, and promotes it and
 `run_shell` into the always-loaded core set (§5, now twelve tools). Chromium is
@@ -794,7 +807,7 @@ privilege from the promotion — both still execute only as the sandbox user.
 | `send_notification` | `message: string` (required) | `await ctx.router.notify(...)`. |
 | `search_tools` | `query: string` (required) | `ctx.registry.search(query)`. Content = one line per match: `name — description`. Agent adds matches to the active set (§4.10 step 7). Empty → `"No tools matched. Try different words."` |
 | `get_active_tasks` | none | `ctx.tasks.list_open(ctx.user_id)` rendered one per line with id, type, title, due_at. |
-| `create_task` | `type: enum[5 types]`, `title: string`, `detail: string?`, `due_at: string? (ISO8601)`, `trigger: string?` | `ctx.tasks.create(...)`. Content = `"Task {id} created."` |
+| `create_task` | `type: enum[5 types]`, `title: string`, `detail: string?`, `due_at: string? (ISO8601)`, `trigger: string?`, `check_every_minutes: integer?` | `ctx.tasks.create(...)`. Content = `"Task {id} created."` |
 | `close_task` | `task_id: string`, `resolution: string` | `ctx.tasks.close(...)`. `"Task closed."` or `ok=False, "No such open task."` |
 
 The four core memory tools (`memory_grep`, `memory_read`, `memory_list`,
@@ -887,7 +900,23 @@ correct: bad config should never half-run.
    `type="task_due"`, `priority=HIGH`, `payload={"task_id", "title", "detail"}`
    for the task's user. Mark the task's `data.fired = true` via `update` so it
    emits only once (the LLM closes or reschedules it).
-2. Daily at the configured local time (default 03:30): call
+2. In the same 60 s pass: `tasks.list_checks_due(now)` → for each armed task,
+   emit `type="task_check"`, `priority=NORMAL`,
+   `payload={"task_id", "task_type", "title", "trigger", "detail", "final"}`,
+   then re-arm `data.next_check_at = now + check_interval_s`. This is what gives
+   a `monitoring` task a clock: without it such a task is only a passive note,
+   reconsidered when some *unrelated* event happens to wake the agent. NORMAL (not
+   HIGH) because a routine check must not jump ahead of real work, and the payload
+   carries `trigger`/`detail` because neither appears in the rendered system
+   prompt (§4.11) — the title alone does not say what to check. A task is armed
+   only when `data.check_interval_s` is set (floor `MIN_CHECK_INTERVAL_S` = 300 s,
+   since each check costs a full serialized agent cycle); unarmed tasks emit
+   nothing, preserving the passive-note behaviour. `reminder_pending` is excluded —
+   it fires once via job 1 and must not double up. For a task with `due_at`, that
+   timestamp bounds the watch: the first check at or after it is flagged
+   `final: true` and the task is disarmed, so "keep checking until 9am" actually
+   stops instead of going quietly dormant.
+3. Daily at the configured local time (default 03:30): call
    `memory.prune_short_term(retention_days)` and emit a LOW `type="housekeeping"`
    event with the prune count.
 

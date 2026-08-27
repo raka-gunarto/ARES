@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from ares.core.event import EventBus, Priority
 from ares.core.memory.base import BaseMemory
 from ares.core.source import BaseSource
-from ares.core.tasks.store import TaskStore
+from ares.core.tasks.store import TaskStore, _parse_iso_utc
 from ares.core.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -78,11 +78,54 @@ class SchedulerSource(BaseSource):
                     )
                     new_data = {**task.data, "fired": True}
                     await self.tasks.update(task.id, data=new_data)
+
+                await self._run_due_checks(now)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("scheduler due-loop iteration failed")
             await asyncio.sleep(60)
+
+    async def _run_due_checks(self, now: datetime) -> None:
+        """Emit `task_check` for every armed task whose interval has elapsed.
+
+        This is what gives a `monitoring` task a clock. Unlike a reminder it
+        re-arms rather than firing once, and it carries `trigger`/`detail` in the
+        payload — neither appears in the rendered system prompt, so without them
+        the agent would be told to check something without being told what.
+
+        A monitoring task's `due_at` is read as "stop checking after this", which
+        is how ARES already phrases these ("until 9am"). The last check before
+        that bound is flagged `final` so the agent can wrap up and close rather
+        than the task going quietly dormant.
+        """
+        for task in await self.tasks.list_checks_due(now):
+            until = _parse_iso_utc(task.due_at)
+            final = until is not None and now >= until
+            await self.emit(
+                type="task_check",
+                payload={
+                    "task_id": task.id,
+                    "task_type": task.type,
+                    "title": task.title,
+                    "trigger": task.trigger,
+                    "detail": task.detail,
+                    "final": final,
+                },
+                priority=Priority.NORMAL,
+                user_id=task.user_id,
+            )
+            data = {**task.data}
+            if final:
+                # Stop re-arming; the agent was just told this was the last one.
+                data.pop("check_interval_s", None)
+                data.pop("next_check_at", None)
+            else:
+                interval = int(data.get("check_interval_s") or 0)
+                data["next_check_at"] = (
+                    now + timedelta(seconds=interval)
+                ).isoformat()
+            await self.tasks.update(task.id, data=data)
 
     async def _housekeeping_loop(self) -> None:
         """Run memory pruning once a day at the configured local time."""

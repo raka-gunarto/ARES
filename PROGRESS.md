@@ -1,6 +1,6 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.8. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.9. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
@@ -360,6 +360,32 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] spec §18/§14/§8 + DEPLOYMENT updated; full suite 220 passed
 
 ## Decisions
+
+- 2026-08-27 (v1.9, operator-authorised): `monitoring` tasks get a real clock (§7.2).
+  Found by reading the live trace + tasks DB: `monitoring` had NO machinery at all —
+  `list_due()` filters `type='reminder_pending'`, and nothing anywhere else queried
+  `type='monitoring'`. It was a passive note re-rendered into the system prompt each cycle,
+  so it was only ever reconsidered when an *unrelated* event woke the agent. Measured: a task
+  promising checks "every 30 minutes … until 9am" (2026-08-01) sat in a window containing
+  exactly ONE event (the 02:30 housekeeping job) — one opportunistic check instead of 17.
+  Worse, the agent told the user what it could not do, every time: "you'll get a notification
+  when they come back", "I'll check again at ~01:44", "I'll check the news periodically and
+  ping you by SMS" (the last one safety-adjacent, about Jakarta protest escalation, created
+  minutes after fetch_page shipped and never checked once).
+  Fix, in two halves as agreed:
+   * SCHEDULER (the real fix): `check_schedule()` + `TaskStore.list_checks_due()`; the 60 s
+     pass emits a re-arming NORMAL `task_check` carrying `trigger`/`detail` — required because
+     neither is rendered in the system prompt (only `[type] title (id)` is), so the agent would
+     otherwise be told to check something without being told what. NORMAL not HIGH: a routine
+     check must not jump ahead of real work. Floor of 300 s because each check is a full
+     serialized agent cycle. Stored in the existing `data` blob (same place the reminder loop
+     keeps `fired`), so NO schema migration. `reminder_pending` excluded so it cannot double-fire.
+     `due_at` bounds the watch: the check at/after it is flagged `final` and the task disarms.
+   * HONESTY (the gap it cannot close): `create_task` gains `check_every_minutes`, and when a
+     monitoring task is created WITHOUT it the tool result now says so in words — "no timer set
+     — this is a passive note, not an active watch. Do not tell anyone you will keep checking."
+     Plus a persona block on not promising a cadence or a notification nothing backs.
+  Unarmed tasks behave exactly as before. 12 new tests (7 store, 5 scheduler).
 
 - 2026-08-27 (v1.8, operator-authorised): headless browser `fetch_page` + `run_shell` and
   `fetch_page` promoted to core (§5, twelve tools). **No dependency added** — §12 says
