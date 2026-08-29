@@ -78,6 +78,49 @@ RULES_REMINDER = (
 )
 
 
+# --- The IGNORE sentinel ----------------------------------------------------
+# RULES tells the model to answer an ambient event with the single word IGNORE.
+# Until now nothing in the code knew about it: the only occurrence of the string
+# anywhere outside RULES was the instruction itself. Consequences seen in 46 days
+# of trace:
+#   * `speak({"message": "IGNORE"})` — 3 times, once with a live SIP call as the
+#     active channel, so the sentinel was said out loud;
+#   * a user-initiated turn answered "IGNORE" would be delivered verbatim by the
+#     step-8 fallback, since it only checks whether `speak` was called;
+#   * 529 finals said IGNORE with prose in front of it and were not recognised as
+#     ignores at all, so nothing could count or short-circuit them.
+IGNORE_SENTINEL = "IGNORE"
+
+
+def is_ignore(text: str) -> bool:
+    """True if `text` is the model declining to act on an ambient event.
+
+    Accepts the forms the model actually emits: the bare word, the word followed
+    by a dash/newline and a note to itself, and a closing line that is just the
+    word after a paragraph of reasoning. Deliberately does NOT match prose that
+    merely begins with the word ("IGNORE means ..."), which would silently eat a
+    real answer.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+
+    lines = stripped.splitlines()
+    head = lines[0].strip()
+    # Whole reply is the sentinel, optionally punctuated.
+    if head.rstrip(".!").strip().upper() == IGNORE_SENTINEL and len(lines) == 1:
+        return True
+    # Leads with the sentinel, then a separator and commentary.
+    upper = head.upper()
+    if upper.startswith(IGNORE_SENTINEL):
+        rest = head[len(IGNORE_SENTINEL):].lstrip()
+        if not rest or rest[0] in "-—–:;,.":
+            return True
+    # Closes with a line that is only the sentinel.
+    tail = lines[-1].strip().rstrip(".!").strip().upper()
+    return tail == IGNORE_SENTINEL
+
+
 def build_system_prompt(
     persona: str, now: datetime, session: Session, open_tasks: list[Task]
 ) -> dict:

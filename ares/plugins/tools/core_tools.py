@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ares.core.prompt import is_ignore
 from ares.core.tasks.store import check_schedule
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 
@@ -22,6 +23,18 @@ class Speak(BaseTool):
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Deliver a message to the user."""
         message = kwargs["message"]
+        # The IGNORE sentinel is a control token for the agent loop, not speech.
+        # The trace caught it being spoken 3 times, once on a live call.
+        if is_ignore(message):
+            return ToolResult(
+                ok=False,
+                content=(
+                    "IGNORE is the control word for 'this event needs no action' "
+                    "— it is never spoken. To ignore the event, make no tool call "
+                    "and reply with IGNORE as your final answer. To say something, "
+                    "call speak with the actual words."
+                ),
+            )
         await ctx.router.speak(ctx.user_id, message)
         return ToolResult(ok=True, content="Delivered.")
 

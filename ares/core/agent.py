@@ -11,7 +11,7 @@ if typing.TYPE_CHECKING:
 
 from ares.core.event import Event
 from ares.core.llm.client import LLMClient
-from ares.core.prompt import RULES_REMINDER, build_system_prompt
+from ares.core.prompt import RULES_REMINDER, build_system_prompt, is_ignore
 from ares.core.router import ResponseRouter
 from ares.core.session import SessionManager
 from ares.core.tool import ToolContext, ToolRegistry, ToolResult
@@ -311,9 +311,13 @@ class Agent:
                     break
 
             # STEP 8
-            if user_initiated and not spoke:
+            # A final answer of IGNORE is the model declining to act (RULES). It
+            # is a control token, never a reply: the step-8 fallback used to
+            # deliver it verbatim to the user on any user-initiated turn.
+            ignored = is_ignore(final_text)
+            if user_initiated and not spoke and not ignored:
                 await self.router.speak(event.user_id, final_text)
-            elif not user_initiated and not spoke and not notified:
+            elif not spoke and not notified:
                 log.info("agent chose silence for event %s", event.id)
 
             self.tracer.emit(
@@ -322,6 +326,7 @@ class Agent:
                 text=final_text,
                 spoke=spoke,
                 notified=notified,
+                ignored=ignored,
                 channel=str(session.active_channel),
             )
 
