@@ -172,6 +172,57 @@ class FilesystemMemory(BaseMemory):
         await asyncio.to_thread(_delete_file)
         return f"Deleted {rel_path}."
 
+    async def reconcile_index(self) -> dict:
+        """Add missing long-term files to INDEX.md and report stale entries.
+
+        The index is LLM-maintained (F5), and the live store shows it drifting:
+        INDEX.md described 2 of 6 long-term files, so four memories — including
+        people.md and communication-preferences.md — were invisible to anything
+        that consults the index before reading. Nothing ever reconciled it.
+
+        This is deliberately mechanical bookkeeping, not authorship: a missing
+        file gets a stub line the model can improve, and an entry pointing at a
+        file that no longer exists is REPORTED but never deleted, because
+        removing a line the model wrote is destructive and it may be mid-edit.
+        """
+        long_term_dir = self.root / "long-term"
+        index_path = self.root / "INDEX.md"
+
+        def _reconcile() -> dict:
+            if not long_term_dir.exists():
+                return {"added": [], "stale": []}
+
+            existing = sorted(
+                f"long-term/{p.name}"
+                for p in long_term_dir.glob("*.md")
+                if p.is_file()
+            )
+            text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
+
+            added = [rel for rel in existing if rel not in text]
+            # An index line naming a long-term file that is no longer on disk.
+            stale = []
+            for line in text.splitlines():
+                for token in line.replace("**", " ").replace("`", " ").split():
+                    cleaned = token.strip("*_()[],;:")
+                    if cleaned.startswith("long-term/") and cleaned.endswith(".md"):
+                        if cleaned not in existing and cleaned not in stale:
+                            stale.append(cleaned)
+
+            if added:
+                stubs = "\n".join(
+                    f"- **{rel}** — (not yet described; added by housekeeping)"
+                    for rel in added
+                )
+                body = text.rstrip("\n")
+                index_path.write_text(
+                    (body + "\n" if body else "") + stubs + "\n", encoding="utf-8"
+                )
+
+            return {"added": added, "stale": stale}
+
+        return await asyncio.to_thread(_reconcile)
+
     async def prune_short_term(self, retention_days: int) -> int:
         """Delete short-term files older than retention window; return count deleted."""
         short_term_dir = self.root / "short-term"

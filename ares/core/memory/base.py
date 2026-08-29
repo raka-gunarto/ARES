@@ -32,3 +32,10 @@ class BaseMemory(abc.ABC):
     @abc.abstractmethod
     async def prune_short_term(self, retention_days: int) -> int:
         """Delete short-term files older than retention window; return count deleted."""
+
+    @abc.abstractmethod
+    async def reconcile_index(self) -> dict:
+        """Add missing long-term files to INDEX.md; report stale entries.
+
+        Returns {"added": [rel_path, ...], "stale": [rel_path, ...]}.
+        """

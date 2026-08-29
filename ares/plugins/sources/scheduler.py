@@ -135,16 +135,36 @@ class SchedulerSource(BaseSource):
                 await asyncio.sleep(delay)
                 if self._stopping:
                     break
-                count = await self.memory.prune_short_term(self.retention_days)
-                await self.emit(
-                    type="housekeeping",
-                    payload={"pruned": count},
-                    priority=Priority.LOW,
-                )
+                await self._run_housekeeping()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("scheduler housekeeping iteration failed")
+
+    async def _run_housekeeping(self) -> None:
+        """Prune short-term memory, reconcile INDEX.md, emit the LOW event.
+
+        The index drifts: the live store had INDEX.md describing 2 of 6
+        long-term files, hiding four memories from anything that consults it
+        before reading. Stubs are added mechanically and the model is told what
+        changed so it can write real descriptions. Reconciliation failing must
+        never cost the nightly prune, so it is caught separately.
+        """
+        count = await self.memory.prune_short_term(self.retention_days)
+        index: dict = {"added": [], "stale": []}
+        try:
+            index = await self.memory.reconcile_index()
+        except Exception:
+            log.exception("scheduler: INDEX.md reconciliation failed")
+        await self.emit(
+            type="housekeeping",
+            payload={
+                "pruned": count,
+                "index_added": index.get("added", []),
+                "index_stale": index.get("stale", []),
+            },
+            priority=Priority.LOW,
+        )
 
     def _seconds_until_next_run(self) -> float:
         """Compute seconds until the next local HH:MM occurrence.
