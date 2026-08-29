@@ -245,11 +245,31 @@ class TaskStore:
 
         await cursor.close()
 
-        # Fetch and return the closed task
+        # Fetch the closed task
         cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         await cursor.close()
-        return self._row_to_task(row) if row else None
+        if row is None:
+            return None
+        task = self._row_to_task(row)
+
+        # Disarm any recurring check. list_checks_due already filters on
+        # status='open', so a closed task never fires — but leaving the schedule
+        # in `data` means a reopened task silently resumes polling on a stale
+        # next_check_at, and the live store shows closed tasks still carrying one.
+        if "check_interval_s" in task.data or "next_check_at" in task.data:
+            data = {
+                k: v
+                for k, v in task.data.items()
+                if k not in ("check_interval_s", "next_check_at")
+            }
+            await self._db.execute(
+                "UPDATE tasks SET data = ? WHERE id = ?", (json.dumps(data), task_id)
+            )
+            await self._db.commit()
+            task = dataclasses.replace(task, data=data)
+
+        return task
 
     async def list_open(self, user_id: str) -> list[Task]:
         """List all open tasks for a user, ordered by created_at."""

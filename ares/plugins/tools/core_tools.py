@@ -5,6 +5,45 @@ from ares.core.tasks.store import check_schedule
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 
 
+# --- Duplicate-task guard ---------------------------------------------------
+# 5 of the 21 tasks in the live store are duplicate pairs created minutes apart
+# ("Call Raka on Phone" twice, "Turn on cooling to 21C at 3pm" twice, ...): the
+# model creates a task, loses track of the confirmation, and creates it again.
+# Two reminders then fire for one intention. Exact title matching catches only
+# one of the five pairs, so compare token sets instead.
+_SIMILARITY_THRESHOLD = 0.6
+
+
+def _title_tokens(title: str) -> set[str]:
+    """Lowercase alphanumeric tokens of a task title."""
+    cleaned = "".join(c if c.isalnum() else " " for c in (title or "").lower())
+    return {t for t in cleaned.split() if t}
+
+
+def _similarity(a: str, b: str) -> float:
+    """Jaccard overlap of two titles' token sets (0.0 - 1.0)."""
+    ta, tb = _title_tokens(a), _title_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _find_duplicate(existing: list, type_: str, title: str, due_at: str | None):
+    """Return an open task that looks like a re-creation of this one, else None.
+
+    Requires the same task type, and — when both carry a due time — the same
+    due time, so "turn the cooling on at 3pm" today and tomorrow stay distinct.
+    """
+    for task in existing:
+        if task.type != type_:
+            continue
+        if task.due_at and due_at and task.due_at != due_at:
+            continue
+        if _similarity(task.title, title) >= _SIMILARITY_THRESHOLD:
+            return task
+    return None
+
+
 class Speak(BaseTool):
     """Speak to the user via the active channel."""
 
@@ -172,6 +211,14 @@ class CreateTask(BaseTool):
                     "Ignored for reminder_pending, which fires once at due_at."
                 ),
             },
+            "force": {
+                "type": "boolean",
+                "description": (
+                    "Create even if a similar open task already exists. Only set "
+                    "this when you have checked the existing task and genuinely "
+                    "need a second one."
+                ),
+            },
         },
         "required": ["type", "title"]
     }
@@ -191,6 +238,22 @@ class CreateTask(BaseTool):
                     "context and call create_task again."
                 ),
             )
+        # Re-creating a task the model already opened means two reminders fire
+        # for one intention. Point it at the existing task instead.
+        if not kwargs.get("force"):
+            existing = await ctx.tasks.list_open(ctx.user_id)
+            dup = _find_duplicate(existing, kwargs["type"], kwargs["title"], due_at)
+            if dup is not None:
+                return ToolResult(
+                    ok=False,
+                    content=(
+                        f"An open {dup.type} task already covers this: "
+                        f"'{dup.title}' (id={dup.id}, due={dup.due_at}). Use it, "
+                        f"update it with update_task, or pass force=true if you "
+                        f"really need a second one."
+                    ),
+                )
+
         # A reminder fires once at due_at; a recurring check would double up.
         interval_min = kwargs.get("check_every_minutes")
         schedule = {}
