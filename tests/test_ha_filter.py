@@ -239,3 +239,54 @@ async def test_blocked_entities_beats_allowed_entities() -> None:
         state_changed("switch.special", "off", "on")
     ) is False
     assert source.bus.qsize() == 0
+
+
+# ---- availability churn (the generic fix for the Xbox saga) -----------------
+
+async def test_unavailable_transitions_are_dropped_by_default():
+    """1,490 of 1,730 traced events were one integration flapping like this."""
+    src_ = make_source()
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.xbox", "off", "unavailable")
+    ) is False
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.xbox", "unavailable", "off")
+    ) is False
+
+
+async def test_unknown_is_treated_the_same():
+    src_ = make_source()
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.xbox", "on", "unknown")
+    ) is False
+
+
+async def test_real_state_changes_still_emit():
+    src_ = make_source()
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.kitchen_motion", "off", "on")
+    ) is True
+
+
+async def test_high_priority_entities_are_exempt():
+    """A smoke detector going offline IS worth knowing about."""
+    src_ = make_source()
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.smoke_kitchen", "off", "unavailable")
+    ) is True
+
+
+async def test_opt_in_restores_the_old_behaviour():
+    src_ = make_source()
+    src_.emit_unavailable = True
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.xbox", "off", "unavailable")
+    ) is True
+
+
+async def test_new_entity_appearing_with_a_real_state_still_emits():
+    """old_state=None is a genuinely new entity, not availability churn."""
+    src_ = make_source()
+    assert await src_.process_state_changed(
+        state_changed("binary_sensor.kitchen_motion", None, "on")
+    ) is True

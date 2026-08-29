@@ -43,6 +43,17 @@ _PRIORITY_MAP: dict[str, Priority] = {
 
 _SNAPSHOT_TTL = 30.0
 
+# States that mean "the integration lost the device", not "something happened in
+# the house". 1,501 of 1,730 state_change events in 46 days of trace (86.8%)
+# involved one of these, and 1,490 were a single Xbox integration flapping
+# off <-> unavailable. Each cost a full serialized agent cycle. The per-entity
+# deny-list silenced that one integration; this silences the whole class.
+_NON_STATES = frozenset({"unavailable", "unknown", "none", ""})
+
+# Hard cap on the snapshot pasted into every event payload, so widening
+# allowed_domains/allowed_entities cannot quietly inflate every prompt.
+_SNAPSHOT_MAX_ENTITIES = 60
+
 # Reads are local and should fail fast. Service calls actuate real hardware and
 # HA does not answer until the integration does — a cloud-backed AC routinely
 # needs longer than a read, and a premature timeout is worse than a slow reply
@@ -71,6 +82,7 @@ class HAService:
         token: str,
         allowed_domains: list[str],
         blocked_controls: list[str] | None = None,
+        snapshot_entities: list[str] | None = None,
     ) -> None:
         """Initialize the service.
 
@@ -78,12 +90,15 @@ class HAService:
             rest_url: Base URL of the Home Assistant REST API.
             token: Long-lived access token.
             allowed_domains: Domains fetched by snapshot_summary().
+            snapshot_entities: Extra entity_ids to include in the snapshot,
+                for entities allowed individually rather than by domain.
             blocked_controls: `domain.service` pairs that LLM-initiated
                 control_device must refuse (default: doors/alarm disarm).
         """
         self.rest_url = rest_url.rstrip("/")
         self.token = token
         self.allowed_domains = allowed_domains
+        self.snapshot_entities = list(snapshot_entities or [])
         self.blocked_controls = frozenset(
             blocked_controls if blocked_controls is not None else DEFAULT_BLOCKED_CONTROLS
         )
@@ -139,10 +154,31 @@ class HAService:
             return self._snap_cache
 
         lines: list[str] = []
+        seen: set[str] = set()
         for domain in self.allowed_domains:
             states = await self.get_states(domain)
             for s in states:
-                lines.append(f"{s.get('entity_id')}: {s.get('state')}")
+                eid = s.get("entity_id")
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                lines.append(f"{eid}: {s.get('state')}")
+
+        # Entities allowed individually (e.g. two thermostats, without opening
+        # the whole climate domain) were absent from the snapshot even though
+        # they generate events and are the main control targets.
+        missing = [e for e in sorted(self.snapshot_entities) if e not in seen]
+        for eid in missing:
+            try:
+                state_obj = await self.get_state(eid)
+            except Exception:  # one unreachable entity must not void the snapshot
+                continue
+            if isinstance(state_obj, dict):
+                lines.append(f"{eid}: {state_obj.get('state')}")
+
+        if len(lines) > _SNAPSHOT_MAX_ENTITIES:
+            omitted = len(lines) - _SNAPSHOT_MAX_ENTITIES
+            lines = lines[:_SNAPSHOT_MAX_ENTITIES] + [f"... ({omitted} more entities)"]
         summary = "\n".join(lines)
         self._snap_cache = summary
         self._snap_ts = now
@@ -194,6 +230,8 @@ class HomeAssistantSource(BaseSource):
         )
         self.allowed_entities: set[str] = set(config.get("allowed_entities", []))
         self.blocked_entities: list[str] = config.get("blocked_entities", [])
+        # Integrations dropping in and out are noise, not household events.
+        self.emit_unavailable: bool = bool(config.get("emit_unavailable", False))
         self.debounce_seconds: float = float(config.get("debounce_seconds", 5))
         self.priority_rules: list[dict] = config.get("priority_rules", [])
         self.entity_rooms: dict[str, str] = config.get("entity_rooms", {})
@@ -231,8 +269,34 @@ class HomeAssistantSource(BaseSource):
             if domain not in self.allowed_domains and entity_id not in self.allowed_entities:
                 return False
 
-            # same-state drop
             old_state = data.get("old_state")
+            priority = self._resolve_priority(entity_id)
+
+            # Availability churn: an integration losing or regaining a device is
+            # not something happening in the house. 86.8% of all state_change
+            # events in 46 days of trace were one of these transitions, and each
+            # one cost a full serialized agent cycle. HIGH/CRITICAL entities are
+            # exempt — a smoke detector going offline IS worth knowing about.
+            if not self.emit_unavailable and priority >= Priority.NORMAL:
+                new_value = str(new_state.get("state") or "").lower()
+                # `old_state is None` is a genuinely NEW entity appearing, not a
+                # device dropping out — only compare the old side when there is
+                # one, or the first sighting of every entity is swallowed.
+                old_value = (
+                    str(old_state.get("state") or "").lower() if old_state else None
+                )
+                if new_value in _NON_STATES or (
+                    old_value is not None and old_value in _NON_STATES
+                ):
+                    log.debug(
+                        "dropping availability churn for %s (%s -> %s)",
+                        entity_id,
+                        old_value if old_value is not None else "new",
+                        new_value or "none",
+                    )
+                    return False
+
+            # same-state drop
             if old_state and old_state.get("state") == new_state.get("state"):
                 return False
 
@@ -241,8 +305,6 @@ class HomeAssistantSource(BaseSource):
             last = self._last_emit.get(entity_id)
             if last is not None and (now - last) < self.debounce_seconds:
                 return False
-
-            priority = self._resolve_priority(entity_id)
 
             # person -> session
             if domain == "person":

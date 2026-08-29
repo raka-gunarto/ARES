@@ -279,6 +279,10 @@ async def main(config_path: str) -> None:
                 "allowed_domains", ["binary_sensor", "person", "alarm_control_panel"]
             ),
             blocked_controls=ha_config.get("blocked_controls"),
+            # Entities allowed individually still belong in the snapshot; without
+            # this a thermostat added via allowed_entities generates events but
+            # never appears in the house summary pasted into the prompt.
+            snapshot_entities=ha_config.get("allowed_entities", []),
         )
         services["home_assistant"] = ha_service
         for t in HOME_TOOLS:
