@@ -23,6 +23,53 @@ except ImportError:
     _HAVE_STT = False
 
 
+# --- Hallucination filter (§7.4/§7.5) ---------------------------------------
+# Whisper invents stock phrases out of near-silence. In the live SIP trace 36 of
+# 78 in-call turns were <=2 words and 30 of them were the single word "You" —
+# each one a phantom `call_speech` event costing a full serialized agent cycle
+# mid-call, so ARES answered a word the caller never said. `vad_filter=True`
+# reduces this but does not eliminate it, because a pass containing a cough or
+# line noise still reaches the decoder.
+#
+# Two independent gates, both cheap:
+#  1. Whisper's own `no_speech_prob` per segment — its estimate that the segment
+#     is not speech at all. Segments over the threshold are dropped outright.
+#  2. An exact-match phrase list, applied only when the phrase is the ENTIRE
+#     transcript. A bare "you" or "thanks for watching" is never a real turn on
+#     a phone call; losing a genuine one-word courtesy costs nothing, while
+#     answering a phantom one derails the conversation.
+_NO_SPEECH_PROB_MAX = 0.6
+
+_HALLUCINATION_PHRASES = frozenset(
+    {
+        "you",
+        "thank you",
+        "thank you very much",
+        "thanks for watching",
+        "thank you for watching",
+        "please subscribe",
+        "subscribe",
+        "bye bye",
+        "the end",
+        "blank_audio",
+        "silence",
+        "music",
+        "applause",
+    }
+)
+
+
+def _normalize(text: str) -> str:
+    """Lowercase and strip punctuation/brackets for stop-list comparison."""
+    stripped = "".join(c for c in text.lower() if c.isalnum() or c.isspace())
+    return " ".join(stripped.split())
+
+
+def is_hallucination(transcript: str) -> bool:
+    """True if `transcript` is entirely one of Whisper's silence artefacts."""
+    return _normalize(transcript) in _HALLUCINATION_PHRASES
+
+
 class WhisperSTT:
     """Faster-Whisper wrapper for speech-to-text transcription.
 
@@ -96,12 +143,31 @@ class WhisperSTT:
                 condition_on_previous_text=False,
             )
 
-            # Join all segment texts
-            transcript = "".join(segment.text for segment in segments).strip()
+            # Drop segments Whisper itself scores as non-speech before joining.
+            # getattr keeps this working if a faster-whisper build omits the
+            # field rather than crashing the call.
+            kept = []
+            for segment in segments:
+                prob = getattr(segment, "no_speech_prob", 0.0) or 0.0
+                if prob > _NO_SPEECH_PROB_MAX:
+                    log.debug(
+                        "dropping non-speech segment (no_speech_prob=%.2f): %r",
+                        prob,
+                        segment.text,
+                    )
+                    continue
+                kept.append(segment.text)
+            transcript = "".join(kept).strip()
 
             # Spec §7.4: empty/whitespace transcript → drop (return empty string)
             if not transcript:
                 log.debug("Transcription produced empty/whitespace result")
+                return ""
+
+            # Stock phrases invented from silence are not turns — drop them so
+            # they never become an event (30 phantom "You" turns in the trace).
+            if is_hallucination(transcript):
+                log.debug("dropping known Whisper hallucination: %r", transcript)
                 return ""
 
             log.debug(f"Transcribed: {transcript}")
