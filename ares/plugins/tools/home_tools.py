@@ -38,6 +38,58 @@ def _fmt_attr_value(value: typing.Any, limit: int = 200) -> str:
     return s
 
 
+# Home Assistant services take NAMED parameters, and the name differs per
+# service. The old code mapped a bare `value` to a literal `"value"` field for
+# everything except set_temperature — a field almost no HA service accepts — so
+# every `set_hvac_mode(value="off")` was a guaranteed 400 Bad Request. The live
+# trace shows the model then brute-forcing variants (`value`, `{"hvac_mode":..}`
+# nested under value, `data` and `value` together), burning a cycle each time.
+# Mapping the convenience field to the service's real parameter removes the
+# whole class of failure.
+_SERVICE_VALUE_FIELD: dict[str, str] = {
+    "set_temperature": "temperature",
+    "set_hvac_mode": "hvac_mode",
+    "set_fan_mode": "fan_mode",
+    "set_preset_mode": "preset_mode",
+    "set_swing_mode": "swing_mode",
+    "set_humidity": "humidity",
+    "set_percentage": "percentage",
+    "set_direction": "direction",
+    "set_cover_position": "position",
+    "set_cover_tilt_position": "tilt_position",
+    "select_option": "option",
+    "select_source": "source",
+    "volume_set": "volume_level",
+    "set_value": "value",  # number/input_number genuinely takes `value`
+}
+
+
+def _entity_attrs(state_obj: object) -> dict:
+    """Attributes of a state payload, tolerating None/malformed responses."""
+    if not isinstance(state_obj, dict):
+        return {}
+    attrs = state_obj.get("attributes")
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _climate_off_hint(attrs: dict) -> str:
+    """Suggest the working way to switch a climate entity off.
+
+    Grounded in the live trace: this household's AC reports
+    `supported_features: 9` — no `turn_off` service at all, so every
+    `climate.turn_off` returned HTTP 500. When `hvac_modes` lists `off`, name
+    the call that actually works instead of leaving the model to guess.
+    """
+    modes = attrs.get("hvac_modes")
+    if isinstance(modes, list) and "off" in modes:
+        return (
+            f" This entity's hvac_modes are {modes}; switch it off with "
+            "action='set_hvac_mode', data={'hvac_mode':'off'} — it has no "
+            "working turn_off service."
+        )
+    return ""
+
+
 class GetHomeState(BaseTool):
     """Get Home Assistant entity state or domain summary."""
 
@@ -160,7 +212,9 @@ class ControlDevice(BaseTool):
         "Not every device has a 'turn_off' service: if turn_off fails or the entity "
         "lacks it (check supported_features / hvac_modes via get_home_state), turn a "
         "climate device off with action='set_hvac_mode', data={'hvac_mode':'off'}. "
-        "The legacy `value` field still works for simple cases like set_temperature."
+        "`value` is a shorthand accepted only for single-parameter services "
+        "(set_temperature, set_hvac_mode, set_fan_mode, ...); anything else must "
+        "use `data`."
     )
     keywords = (
         "home",
@@ -195,7 +249,11 @@ class ControlDevice(BaseTool):
             },
             "value": {
                 "type": "string",
-                "description": "Legacy single value (e.g. '21' for set_temperature). Prefer `data`.",
+                "description": (
+                    "Shorthand for a single-parameter service (e.g. '21' for "
+                    "set_temperature, 'off' for set_hvac_mode). Prefer `data`; "
+                    "services that take more than one field reject `value`."
+                ),
             },
         },
         "required": ["entity_id", "action"],
@@ -227,13 +285,23 @@ class ControlDevice(BaseTool):
                 )
 
             # Named service params come through `data`; `value` is a back-compat
-            # convenience that fills the obvious field only when `data` omits it.
+            # convenience mapped to the service's REAL parameter name. Sending a
+            # literal "value" field (the old fallback) is a guaranteed 400 for
+            # every service except number.set_value, so an unmapped service is
+            # refused with instructions rather than dispatched to fail.
             data: dict[str, typing.Any] = dict(kwargs.get("data") or {})
             if value is not None:
-                if action == "set_temperature":
-                    data.setdefault("temperature", value)
-                else:
-                    data.setdefault("value", value)
+                field = _SERVICE_VALUE_FIELD.get(action)
+                if field is None:
+                    return ToolResult(
+                        False,
+                        f"'{action}' has no single-value form, so `value` cannot be "
+                        f"mapped to a Home Assistant parameter. Pass the named "
+                        f"field(s) in `data` instead, e.g. "
+                        f"data={{'hvac_mode':'off'}}. Call get_home_state on "
+                        f"{entity_id} to see which attributes it accepts.",
+                    )
+                data.setdefault(field, value)
 
             # Call the service
             result = await svc.call_service(domain, action, entity_id, data)
@@ -251,7 +319,24 @@ class ControlDevice(BaseTool):
             return ToolResult(True, f"{action} sent to {entity_id}.")
 
         except Exception as e:
-            return ToolResult(False, f"Home error: {_describe_error(e)}")
+            # A bare failure leaves the model unable to tell "nothing happened"
+            # from "it may have applied" — the trace shows it retrying blindly
+            # either way. Read the entity back so the report names the entity's
+            # ACTUAL state, and for a climate turn_on/turn_off (HTTP 500 on
+            # hardware that has no such service) name the call that does work.
+            detail = _describe_error(e)
+            suffix = ""
+            try:
+                after = await svc.get_state(entity_id)
+                attrs = _entity_attrs(after)
+                if isinstance(after, dict) and after.get("state") is not None:
+                    suffix = f" {entity_id} is currently '{after.get('state')}'."
+                if domain == "climate" and action in ("turn_on", "turn_off"):
+                    suffix += _climate_off_hint(attrs)
+            except Exception:
+                # The read-back is best-effort; never mask the original failure.
+                suffix = " (could not read the entity back to confirm.)"
+            return ToolResult(False, f"Home error: {detail}{suffix}")
 
 
 class ListDevices(BaseTool):

@@ -86,12 +86,43 @@ async def test_value_backcompat_set_temperature():
     assert svc.calls[0][3] == {"temperature": "21"}
 
 
-async def test_value_legacy_other_action():
+async def test_value_maps_to_the_services_real_field():
+    """`value` used to become a literal "value" field — a guaranteed HA 400.
+
+    The live trace shows 9 such calls, all `set_hvac_mode(value='off')`, all
+    rejected, with the model then brute-forcing variants of the same call.
+    """
     svc = _FakeHAService()
     await ControlDevice().run(
+        _ctx(svc), entity_id="climate.living_room", action="set_hvac_mode", value="off"
+    )
+    assert svc.calls[0][3] == {"hvac_mode": "off"}, "value must map to hvac_mode"
+
+
+async def test_value_maps_for_every_single_parameter_service():
+    for action, field in (
+        ("set_fan_mode", "fan_mode"),
+        ("set_preset_mode", "preset_mode"),
+        ("select_option", "option"),
+        ("volume_set", "volume_level"),
+        ("set_value", "value"),
+    ):
+        svc = _FakeHAService()
+        await ControlDevice().run(
+            _ctx(svc), entity_id="climate.living_room", action=action, value="x"
+        )
+        assert svc.calls[0][3] == {field: "x"}, f"{action} -> {field}"
+
+
+async def test_value_on_an_unmapped_service_is_refused_not_dispatched():
+    """Better to refuse with instructions than to send a call that must 400."""
+    svc = _FakeHAService()
+    r = await ControlDevice().run(
         _ctx(svc), entity_id="climate.living_room", action="set_thing", value="x"
     )
-    assert svc.calls[0][3] == {"value": "x"}
+    assert r.ok is False
+    assert svc.calls == [], "must not reach Home Assistant at all"
+    assert "`data`" in r.content
 
 
 async def test_data_takes_precedence_over_value():
@@ -213,3 +244,59 @@ async def test_control_device_reports_timeout_usefully() -> None:
 def test_service_timeout_exceeds_read_timeout() -> None:
     """Service calls actuate hardware; they must get more room than reads."""
     assert SERVICE_TIMEOUT > READ_TIMEOUT
+
+
+# ---- control_device: failures now say what actually happened ---------------
+
+class _FailingHAService(_FakeHAService):
+    """Service whose call_service always raises, as HA's 500s did."""
+
+    def __init__(self, states=None, exc: Exception | None = None):
+        super().__init__(states)
+        self._exc = exc or RuntimeError("Server error '500 Internal Server Error'")
+
+    async def call_service(self, domain, service, entity_id, data):
+        raise self._exc
+
+
+async def test_failure_reads_the_entity_back_and_reports_real_state():
+    """A bare 'Home error:' left the model unable to tell whether it applied."""
+    svc = _FailingHAService(_CLIMATE)
+    r = await ControlDevice().run(
+        _ctx(svc), entity_id="climate.living_room", action="turn_off"
+    )
+    assert r.ok is False
+    assert "climate.living_room is currently 'cool'" in r.content
+
+
+async def test_climate_turn_off_failure_names_the_call_that_works():
+    """This AC reports supported_features 9 — no turn_off service, hence 500."""
+    svc = _FailingHAService(_CLIMATE)
+    r = await ControlDevice().run(
+        _ctx(svc), entity_id="climate.living_room", action="turn_off"
+    )
+    assert "set_hvac_mode" in r.content and "'hvac_mode':'off'" in r.content
+
+
+async def test_read_back_failure_never_masks_the_original_error():
+    class _Worse(_FailingHAService):
+        async def get_state(self, entity_id):
+            raise RuntimeError("read-back also down")
+
+    r = await ControlDevice().run(
+        _ctx(_Worse(_CLIMATE)), entity_id="climate.living_room", action="turn_off"
+    )
+    assert r.ok is False
+    assert "500" in r.content, "the original failure must survive"
+
+
+async def test_timeout_still_warns_it_may_have_applied():
+    import httpx
+
+    svc = _FailingHAService(_CLIMATE, exc=httpx.ReadTimeout("timed out"))
+    r = await ControlDevice().run(
+        _ctx(svc), entity_id="climate.living_room", action="set_temperature", value="21"
+    )
+    assert r.ok is False
+    assert "may still have been applied" in r.content
+    assert r.content.strip() != "Home error:", "must never be empty (63x in the trace)"
