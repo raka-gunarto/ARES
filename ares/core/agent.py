@@ -175,9 +175,27 @@ class Agent:
             # STEP 2
             open_tasks = await self.tasks.list_open(event.user_id)
 
+            # In-flight background runs (§20.5), so the agent sees what it has
+            # already delegated on every cycle without spending a tool call.
+            subagents: list[dict] = []
+            manager = self.services.get("subagents")
+            if manager is not None:
+                try:
+                    subagents = [
+                        r
+                        for r in await manager.list_runs(event.user_id)
+                        if r.get("status") == "running"
+                    ]
+                except Exception:
+                    log.exception("could not list subagent runs for the prompt")
+
             # STEP 3
             system = build_system_prompt(
-                self.persona, datetime.now().astimezone(), session, open_tasks
+                self.persona,
+                datetime.now().astimezone(),
+                session,
+                open_tasks,
+                subagents,
             )
 
             # STEP 4

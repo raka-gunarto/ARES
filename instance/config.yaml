@@ -139,6 +139,16 @@ plugins:
     browser_timeout_default_s: 30
     browser_timeout_max_s: 90
 
+  # Background subagents (spec §20): bounded autonomous runs that report back
+  # on the event bus. Read-only toolset; they cannot speak, act on the home,
+  # write memory, run shell commands or escalate.
+  subagents:
+    enabled: true                    # background runs (§20)
+    max_concurrent: 3                # refused, not queued, beyond this
+    max_iterations: 25               # tool-loop turns per run
+    timeout_s: 900                   # per run; hard ceiling 3600
+    max_result_chars: 4000           # cap on a run's report
+
   privileges:
     enabled: true
     db_path: instance/privq.db       # production: /var/lib/ares/privq.db

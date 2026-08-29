@@ -75,6 +75,7 @@ from ares.core.router import ResponseRouter
 from ares.core.secrets import EnvSecretStore
 from ares.core.session import SessionManager
 from ares.core.source import BaseSource
+from ares.core.subagents import SubagentManager
 from ares.core.tasks.store import TaskStore
 from ares.core.tool import ToolRegistry
 from ares.core.utils.ids import new_id
@@ -106,6 +107,7 @@ from ares.plugins.tools.memory_tools import MEMORY_TOOLS
 from ares.plugins.tools.selfedit_tools import PRCache, build_selfedit_tools
 from ares.plugins.tools.browser_tools import build_browser_tools
 from ares.plugins.tools.shell_tools import build_shell_tools
+from ares.plugins.tools.subagent_tools import SUBAGENT_TOOLS
 from ares.plugins.tools.task_tools import TASK_TOOLS
 from ares.plugins.tools.time_tools import build_time_tools
 
@@ -377,6 +379,30 @@ async def main(config_path: str) -> None:
         priv_source = PrivilegeSource(bus, priv_config, priv_store)
         sources.append(priv_source)
 
+    # Background subagents (§20). Constructed after every tool plugin has
+    # registered, because a run's allowlist is resolved against the registry.
+    subagent_manager: SubagentManager | None = None
+    sub_config = config.plugins.get("subagents", {})
+    if sub_config.get("enabled"):
+        subagent_manager = SubagentManager(
+            bus=bus,
+            llm=llm,
+            registry=registry,
+            tasks=tasks,
+            memory=memory,
+            services=services,
+            max_iterations=sub_config.get("max_iterations", 25),
+            timeout_s=sub_config.get("timeout_s", 900),
+            max_concurrent=sub_config.get("max_concurrent", 3),
+            max_result_chars=sub_config.get("max_result_chars", 4000),
+        )
+        services["subagents"] = subagent_manager
+        for t in SUBAGENT_TOOLS:
+            registry.register(t)
+        # A run's asyncio task died with the previous process; never leave a row
+        # claiming to be in flight that nothing will finish (§20.1).
+        await subagent_manager.recover_orphans()
+
     tracer = Tracer(
         config.trace.path,
         max_bytes=config.trace.max_mb * 1024 * 1024,
@@ -430,6 +456,9 @@ async def main(config_path: str) -> None:
     await asyncio.gather(
         *supervisor_tasks, dispatcher_task, return_exceptions=True
     )
+
+    if subagent_manager is not None:
+        await subagent_manager.shutdown()
 
     await llm.aclose()
     await tasks.aclose()

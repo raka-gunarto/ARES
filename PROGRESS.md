@@ -1,10 +1,61 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.9. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.10. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
+
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.9 + v1.10. ***
+
+v1.10 (operator-authorised) — two halves, both driven by 46 days of live trace
+(2,061 event cycles, 3,329 LLM round-trips, 1,673 tool calls) read off the VM.
+
+PART A — trace-driven fixes:
+ - control_device failed 45% of calls (92/204), 196 of 204 on the two climate
+   entities. `value` was mapped to a literal "value" HA field for every service
+   but set_temperature, so set_hvac_mode(value='off') was a guaranteed 400 (14
+   seen) and the model brute-forced variants at a cycle each. Now mapped per
+   service; unmapped services refuse rather than dispatch. Failures read the
+   entity back and report its real state (63 bare 'Home error: ' timeouts, 15
+   HTTP 500s on an AC with supported_features 9 and no turn_off service).
+ - STT: 36 of 78 in-call turns were <=2 words, 30 the bare word "You". Added
+   per-segment no_speech_prob gating + a whole-transcript phrase list. 'Bye' is
+   deliberately NOT filtered — it ends real calls.
+ - IGNORE had ZERO code enforcement (one grep hit, the RULES instruction).
+   Spoken aloud 3x, once on a live call; delivered verbatim on user-initiated
+   turns; 529 finals (26%) said IGNORE with prose in front and matched nothing.
+   prompt.is_ignore() + guards in `speak` and agent step 8; traced as `ignored`.
+ - HA: 1,501/1,730 state_changes (86.8%) were unavailable/unknown transitions.
+   Generic filter replaces per-entity whack-a-mole; HIGH/CRITICAL exempt.
+   snapshot_summary now covers allowed_entities and is capped at 60.
+ - create_task refuses near-duplicates (Jaccard >= 0.6; 5 of 21 live tasks were
+   duplicate pairs). TaskStore.close() disarms check_interval_s.
+ - Housekeeping reconciles INDEX.md (live index described 2 of 6 long-term
+   files). Additive only — stale entries reported, never deleted.
+ - fetch_page reports bot walls as failures (12/67 returned <200 chars as ok).
+ - agent recovers malformed tool names (one DSML control token leaked into one).
+
+PART B — background subagents (spec §20, F25):
+ - A run is a `multi_step` task row with a `subagent` block in `data`, so
+   durability, prompt visibility and dashboard rendering all reuse tasks.
+ - core/subagents.py (manager: lifecycle, state, events) + core/subagent_run.py
+   (allowlist + bounded loop), split at §0 rule 10's 400-line limit.
+ - SUBAGENT_ALLOWED_TOOLS is a FIXED CODE CONSTANT and an ALLOWLIST, never
+   config-sourced. run_shell is excluded on purpose: unattended loop + fetched
+   web content is the combination §14 exists to prevent. A test asserts every
+   registered tool is explicitly classified, so a tool added later is denied
+   until someone decides.
+ - Reports come back as events: subagent_done (NORMAL), subagent_progress (LOW,
+   so it never backs up). source="subagents" is room-only, so a completion never
+   hijacks the active channel, and neither type is user-initiated, so reports
+   render fenced as [EVENT ...] and are treated as DATA.
+ - recover_orphans() marks rows left `running` by a dead process `interrupted`.
+ - cancel() does its own bookkeeping — a cancelled coroutine cannot reliably
+   await, so a status written from the CancelledError handler is lost.
+ - Suite 414 passed.
+
+*** PREVIOUS ***
 
 *** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5 + v1.6 + v1.7. ***
 

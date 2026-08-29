@@ -26,7 +26,7 @@ _CHANNEL_MAP: dict[tuple[str, str], ChannelType] = {
 }
 
 # Sources whose events never change the active channel (room-only updates).
-_ROOM_ONLY_SOURCES = {"home_assistant", "scheduler", "privileges"}
+_ROOM_ONLY_SOURCES = {"home_assistant", "scheduler", "privileges", "subagents"}
 
 
 def _channel_for(event: Event) -> ChannelType | None:

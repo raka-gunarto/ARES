@@ -121,8 +121,58 @@ def is_ignore(text: str) -> bool:
     return tail == IGNORE_SENTINEL
 
 
+# --- Subagent prompt (spec §20) ---------------------------------------------
+# Like RULES, a fixed code constant. A background run has no person in the
+# conversation, which is exactly why the trust boundary matters more here, not
+# less: everything it reads is untrusted and nobody is watching it work.
+SUBAGENT_PREAMBLE = """You are a background research subagent of ARES, working
+alone on ONE objective. Nobody is watching you work.
+
+WHAT YOU CAN AND CANNOT DO
+- You CANNOT speak to anyone, send notifications, place calls, control the home,
+  write or delete memory, create or close tasks, run shell commands, or request
+  privileges. Those tools are not yours and asking for them wastes your budget.
+- You CAN read: memory, home state, the calendar, the weather, source files, and
+  public web pages.
+- Your ONLY output is the written report you finish with. It goes back to the
+  main ARES, which is the one talking to a person — it decides what to relay.
+
+HOW TO WORK
+- Work in steps. Call `report_progress` when you finish a meaningful step so the
+  household can see the run is alive; not for every tool call.
+- Your budget is finite. Prefer a few good sources to many shallow ones.
+- Finish by writing the report as your final message, with no tool call. State
+  what you found, how confident you are, and what you could not establish.
+- If the objective turns out to be impossible or already answered, say so
+  immediately and stop. A short accurate report beats a long padded one.
+- Never invent a source, a quote, or a figure. If you did not read it, say so."""
+
+
+def build_subagent_prompt(objective: str, now: datetime) -> dict:
+    """System message for one background run (§20).
+
+    Carries the same frozen RULES block as the main agent: a subagent's whole
+    input surface is untrusted fetched content, so the injection defense matters
+    more here than anywhere else.
+    """
+    now_utc = now.astimezone(timezone.utc)
+    context = (
+        f"Current time: {now:%Y-%m-%d %H:%M %Z} "
+        f"(UTC now: {now_utc:%Y-%m-%dT%H:%M:%SZ})\n"
+        f"Your objective: {objective}"
+    )
+    return {
+        "role": "system",
+        "content": f"{SUBAGENT_PREAMBLE}\n\n{context}\n\n{RULES}",
+    }
+
+
 def build_system_prompt(
-    persona: str, now: datetime, session: Session, open_tasks: list[Task]
+    persona: str,
+    now: datetime,
+    session: Session,
+    open_tasks: list[Task],
+    subagents: list[dict] | None = None,
 ) -> dict:
     """
     Build a system prompt for the ARES assistant.
@@ -139,6 +189,7 @@ def build_system_prompt(
         now: Current datetime (may be tz-aware).
         session: The user's current session.
         open_tasks: List of open tasks (or empty list).
+        subagents: Summaries of in-flight background runs (§20.5), or None.
 
     Returns:
         A dict with role "system" and assembled content string.
@@ -155,11 +206,28 @@ def build_system_prompt(
     room = session.current_room or "unknown"
     context_parts.append(f"Active channel: {session.active_channel}. User's current room: {room}.")
 
-    if open_tasks:
-        for task in open_tasks:
+    # A subagent run is a task row, so exclude it from the plain task list and
+    # render it in its own block — "what is running right now" is different
+    # information from "what am I waiting on".
+    plain = [t for t in open_tasks if not isinstance(t.data.get("subagent"), dict)]
+    if plain:
+        for task in plain:
             context_parts.append(f"- [{task.type}] {task.title} (id={task.id})")
     else:
         context_parts.append("No open tasks.")
+
+    # Visible on EVERY cycle without spending a tool call (§20.5), so the agent
+    # never promises to look into something it already has a run working on.
+    if subagents:
+        context_parts.append("")
+        context_parts.append("RUNNING SUBAGENTS (background work you started):")
+        for run in subagents:
+            note = run.get("last_progress")
+            tail = f" — last: {note}" if note else ""
+            context_parts.append(
+                f"- [{run.get('status')}] {run.get('title')} "
+                f"(run_id={run.get('run_id')}){tail}"
+            )
 
     context = "\n".join(context_parts)
 

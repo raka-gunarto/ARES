@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.9
+# ARES — Implementation Specification v1.10
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -179,6 +179,7 @@ ARES is a persistent agent daemon running on home hardware. It:
 | F22 | Self-edit workflow: scratch clone → branch → PR, human-gated merge | plugin |
 | F23 | Update listener: GitHub webhook + polling → pull → daemon restart | `updater/` |
 | F24 | Firecracker microVM runtime model: RO code, hidden secrets, user separation | `deploy/` |
+| F25 | Background subagents: bounded autonomous runs that report back on the event bus | core + plugin |
 
 ### Explicitly OUT of scope for v1 (do not build)
 
@@ -1160,6 +1161,12 @@ plugins:
     enabled: false                   # fetch_page; needs a chromium binary
     browser_timeout_default_s: 30    # sandbox_user/workdir inherited from `shell`
     browser_timeout_max_s: 90
+  subagents:
+    enabled: true                    # background runs (§20)
+    max_concurrent: 3                # refused, not queued, beyond this
+    max_iterations: 25               # tool-loop turns per run
+    timeout_s: 900                   # per run; hard ceiling 3600
+    max_result_chars: 4000           # cap on a run's report
   privileges:
     enabled: true
     db_path: instance/privq.db       # production: /var/lib/ares/privq.db
@@ -1742,6 +1749,98 @@ operator-approved code. It never pulls arbitrary branches.
 
 ---
 
+## 20. Background Subagents (`core/subagents.py` + `plugins/tools/subagent_tools.py`)
+
+A subagent is a **bounded, autonomous LLM loop** that runs in the background on
+one stated objective and reports back by publishing an event on the bus. It
+exists because the main agent is strictly serialized: every event for a user
+waits behind the current one, so anything long-running (research across a dozen
+pages, watching a story develop) blocks the household's assistant for its whole
+duration.
+
+A subagent is NOT a second ARES. It cannot speak to anyone, cannot touch the
+home, cannot write memory, and cannot escalate. It reads, it thinks, and it
+returns text.
+
+### 20.1 Durability — a run IS a task
+
+Each run is a `multi_step` row in the existing TaskStore with a `subagent`
+block in `data`. There is no second store and no schema change. This buys three
+things for free: the run survives a restart, it appears in `list_open()` and so
+in every system prompt, and the dashboard's task view already renders it.
+
+```
+data["subagent"] = {
+  "status":     "running"|"done"|"failed"|"cancelled"|"timeout"|"interrupted",
+  "objective":  str,          # what it was asked to do
+  "started_at": iso8601,
+  "ended_at":   iso8601|None,
+  "progress":   [str, ...],   # newest last, capped
+  "result":     str|None,     # the final report
+  "iterations": int,
+}
+```
+
+On startup `recover_orphans()` marks every row still `running` as
+`interrupted` — its asyncio task died with the process — so a restart can never
+leave a run that nothing will ever finish.
+
+### 20.2 The toolset is a fixed allowlist
+
+`SUBAGENT_ALLOWED_TOOLS` is a frozenset of tool names in code. Like `RULES` it
+is **never sourced from or overridable by config**, and it is an ALLOWLIST, not
+a deny-list: a tool added to ARES later is denied to subagents until someone
+adds it here deliberately.
+
+Allowed: `search_tools`, `memory_grep`, `memory_read`, `memory_list`,
+`get_home_state`, `list_devices`, `get_active_tasks`, `get_task_history`,
+`get_weather`, `get_calendar`, `read_source`, `get_privilege_requests`,
+`get_pr_status`, `fetch_page`, and the subagent-only `report_progress`.
+
+Excluded, deliberately: everything that speaks (`speak`, `send_notification`,
+`place_call`, `end_call`, `send_sip_message`), everything that acts on the house
+(`control_device`), everything that mutates durable state (`memory_write`,
+`memory_delete`, `create_task`, `close_task`, `update_task`), everything that
+escalates (`request_privilege`, the selfedit tools), and `spawn_subagent` itself
+— a subagent cannot spawn subagents, so there is no recursion to bound.
+
+`run_shell` is excluded. A subagent runs unattended with web pages as its main
+input; shell execution plus untrusted fetched content in a loop nobody is
+watching is precisely the combination §14 exists to prevent. The main agent
+keeps `run_shell` for supervised, in-conversation use.
+
+### 20.3 Reporting back
+
+* `subagent_progress` — LOW, payload `{run_id, title, note}`. LOW events are
+  dropped when the user's queue is busy (§13), which is the correct behaviour
+  for progress: it informs when ARES is idle and never builds a backlog.
+* `subagent_done` — NORMAL, payload
+  `{run_id, title, objective, status, result, iterations, duration_s}`.
+
+Both carry `source="subagents"`, which is listed in the dispatcher's
+`_ROOM_ONLY_SOURCES` so a completion never changes the user's active channel.
+Neither type is in `USER_INITIATED_TYPES`, so the main agent renders them as
+fenced `[EVENT ...]` payloads and treats the report as DATA — which it is: a
+subagent's report is a summary of untrusted web content.
+
+### 20.4 Bounds
+
+Every run is bounded on three axes, all configured under `plugins.subagents`:
+`max_iterations` (tool-loop turns), `timeout_s` per run, and `max_concurrent`
+across all runs. A spawn beyond `max_concurrent` is refused, not queued, so the
+model gets immediate feedback rather than a silent wait. Reports are capped at
+`max_result_chars`.
+
+### 20.5 Visibility
+
+`build_system_prompt` takes a `subagents` argument and renders a RUNNING
+SUBAGENTS block beside the open-task list, so the main agent sees what is in
+flight on every single cycle without spending a tool call. `list_subagents`
+gives the same view on demand including finished runs; `get_subagent_result`
+retrieves one report; `cancel_subagent` stops a run.
+
+---
+
 ## 13. Glossary of Non-Obvious Decisions (context for the implementer)
 
 - **Why the router, not the LLM, picks the channel:** the LLM would need
@@ -1784,5 +1883,17 @@ operator-approved code. It never pulls arbitrary branches.
   invisible at runtime if the users/permissions aren't set up — everything
   "works" running as one user. Failing fast on a readable `.env` or missing
   sandbox user turns a silent security collapse into a loud startup error.
+
+- **Why a subagent is a task row, not a new store (§20):** durability,
+  prompt visibility and dashboard rendering all already exist for tasks. A
+  second store would duplicate three mechanisms to hold one dict.
+- **Why the subagent toolset is an allowlist, not a deny-list (§20.2):** a
+  deny-list silently grants every tool added later. The failure mode of an
+  allowlist is a subagent that cannot do something; the failure mode of a
+  deny-list is an unattended loop that can place calls.
+- **Why subagents cannot speak:** if a background run could talk to the user,
+  a poisoned web page could make ARES say or send something with nobody in the
+  conversation. Reports come back as data on the bus and the main agent — which
+  is talking to a real person — decides what, if anything, to relay.
 
 *End of specification.*
