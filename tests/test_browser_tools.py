@@ -194,3 +194,31 @@ def test_build_browser_tools_is_core_and_named():
     tools = build_browser_tools({"sandbox_user": "ares-sbx", "workdir": "/x"})
     assert [t.name for t in tools] == ["fetch_page"]
     assert tools[0].core is True
+
+
+# ---- blocked / empty page detection ----------------------------------------
+
+from ares.plugins.tools.browser_tools import _looks_blocked  # noqa: E402
+
+
+def test_bot_wall_is_reported_as_blocked():
+    """12 of 67 live fetches returned <200 chars and were reported ok=True."""
+    assert _looks_blocked("")
+    assert _looks_blocked("   \n  ")
+    assert _looks_blocked("Just a moment... Checking your browser before accessing.")
+
+
+def test_consent_and_captcha_walls_are_caught():
+    filler = " lorem ipsum dolor sit amet consectetur adipiscing elit " * 12
+    assert _looks_blocked("Please enable JavaScript to continue." + filler)
+    assert _looks_blocked("Verify you are human before proceeding." + filler)
+
+
+def test_a_real_article_is_not_blocked():
+    article = (
+        "Jakarta protests continued for a third day on Tuesday as demonstrators "
+        "gathered near the National Monument. Police said 62 separate protests "
+        "were held across the capital, with organisers calling for further "
+        "action later in the week. Traffic around Monas was closed from dawn."
+    )
+    assert not _looks_blocked(article)

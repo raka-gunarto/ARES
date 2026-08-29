@@ -91,6 +91,24 @@ def fit_context(messages: list[dict], budget: int) -> list[dict]:
     return [system] + kept
 
 
+def sanitize_tool_name(name: str) -> str:
+    """Recover a tool name from a malformed function-call name.
+
+    Some providers leak their own control tokens into the `name` field. The
+    live trace has one call arriving as
+    `get_home_state>\n<|DSML|>parameter name="attributes"...`, which resolved to
+    no tool and cost the cycle. Truncating at the first character that cannot
+    appear in a tool name recovers the intended call.
+    """
+    out = []
+    for ch in (name or ""):
+        if ch.isalnum() or ch == "_":
+            out.append(ch)
+        else:
+            break
+    return "".join(out)
+
+
 def _cap_content(text: str, char_cap: int) -> str:
     """Truncate a tool result so a single dump can't dominate the context."""
     if char_cap <= 0 or len(text) <= char_cap:
@@ -236,6 +254,18 @@ class Agent:
                         result = ToolResult(False, "error: could not parse arguments")
                     else:
                         tool = self.registry.get(name)
+                        if tool is None:
+                            # Retry once against a cleaned name before giving up.
+                            cleaned = sanitize_tool_name(name)
+                            if cleaned and cleaned != name:
+                                tool = self.registry.get(cleaned)
+                                if tool is not None:
+                                    log.warning(
+                                        "recovered malformed tool name %r -> %r",
+                                        name,
+                                        cleaned,
+                                    )
+                                    name = cleaned
                         if tool is None:
                             result = ToolResult(False, f"error: unknown tool {name}")
                         else:

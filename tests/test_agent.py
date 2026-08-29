@@ -177,3 +177,26 @@ async def test_unknown_tool_call_does_not_raise_and_still_force_speaks():
     await agent.handle(evt)  # must not raise
 
     assert channel.messages == ["fallback answer"]
+
+
+# ---- malformed tool names ---------------------------------------------------
+
+def test_sanitize_recovers_a_leaked_control_token():
+    """One live call arrived with the provider's DSML token glued to the name."""
+    from ares.core.agent import sanitize_tool_name
+
+    assert sanitize_tool_name('get_home_state>\n<DSML|parameter name="x"') == "get_home_state"
+    assert sanitize_tool_name("speak") == "speak"
+    assert sanitize_tool_name("<garbage") == ""
+
+
+async def test_agent_recovers_a_malformed_tool_name():
+    llm = FakeLLM(
+        [
+            make_tool_call_message("c1", 'speak>\n<DSML|parameter', {"message": "hi"}),
+            {"role": "assistant", "content": "done"},
+        ]
+    )
+    agent, channel, _ = build_agent(llm)
+    await agent.handle(make_cli_event("say hi"))
+    assert channel.messages == ["hi"], "the recovered call should have run"
