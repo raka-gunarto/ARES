@@ -55,6 +55,27 @@ PART B — background subagents (spec §20, F25):
    await, so a status written from the CancelledError handler is lost.
  - Suite 414 passed.
 
+DEPLOYED 2026-08-29 (code + config both live):
+ - Code: the in-VM updater pulled 834410b on its own poll and restarted cleanly
+   (07:14:39 guest journal, SIP re-registered, dashboard up). `/api/version`
+   reports 834410b.
+ - Config is NOT carried by the updater, so both copies were edited by hand:
+   staging `/home/raka/services/ARES/etc-ares/config.yaml` and the rootfs
+   `/etc/ares/config.yaml` (VM stopped, rw loop-mount, in-place overwrite so
+   owner/mode survive, unmount, restart). Both parse identical.
+ - Added: `plugins.subagents` (enabled, max_concurrent 3, max_iterations 25,
+   timeout_s 900, max_result_chars 4000) and, under `home_assistant`,
+   `allowed_entities: [climate.living_room, climate.bedroom]`.
+ - Those two entities are 96% of every control_device call (371 of 385 trace
+   mentions) and the subject of the monitoring tasks, yet `climate` is not an
+   allowed_domain — so ARES could never see a thermostat change and both were
+   missing from the snapshot in every prompt. Listed individually, NOT as a
+   domain: the same-state drop means attribute drift (current_temperature)
+   emits nothing, only a real hvac_mode change does.
+ - Boot verified at 07:16:26: no traceback, dashboard serving. The subagent
+   manager is constructed and `recover_orphans()` awaited BEFORE the dashboard
+   starts, so a served `/api/version` is proof both succeeded.
+
 *** PREVIOUS ***
 
 *** ALL COMPLETE — M0–M13 + v1.2 bump + PATCH-1 + PATCH-2 + v1.3 + v1.4 + v1.5 + v1.6 + v1.7. ***
