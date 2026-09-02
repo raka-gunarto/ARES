@@ -1,12 +1,41 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.10. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.11. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.9 + v1.10. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.9 + v1.10 + v1.11. ***
+
+v1.11 (operator-authorised) — make the agent reach for §20 unprompted.
+Measured, not guessed: 4 days of live trace after v1.10 shipped (138 records
+since 2026-08-29T07:16).
+ - spawn_subagent was called ZERO times. Over the same window the main loop made
+   28 inline fetch_page calls — 10 in ONE cycle (10:58:46→10:59:46), 7 in
+   another, 5 in another. Every event for the household queues behind those:
+   the 10:27 cycle held the single primary FIFO for 116 s, and the trace shows
+   the next four events firing back-to-back at 10:29:01, 11:43:32, 11:44:42,
+   11:44:44 as the backlog drained.
+ - The tool was NOT hidden: `core = True`, always in the toolset, and its own
+   description already said "Use it instead of doing a long investigation
+   inline". That is the actual finding — a tool description is read once the
+   model is choosing WHICH tool to call, i.e. after it has already committed to
+   doing the work itself. Whether to do the work at all is decided at the top of
+   the turn, where the only thing being read is RULES. Same shape as the IGNORE
+   bug: a capability nothing triggers is a capability nothing uses.
+ - Fix: two bullets appended to HOW YOU ACT in the frozen RULES block (§4.11).
+   One delegates long work at the START of the turn; one carves subagent reports
+   out of IGNORE. That second bullet is load-bearing — all 6 ambient events in
+   the window ended in IGNORE, so without it delegating would reliably lose the
+   answer, strictly worse than never delegating.
+ - RULES is byte-identical in three files by spec mandate and NOTHING enforced
+   it. All three patched from one string, plus tests/test_rules_sync.py (3 tests)
+   so a future edit cannot land in one copy and not the others.
+ - Spec bumped v1.10 → v1.11. The v1.10 header bump had shipped with no
+   changelog paragraph; that entry is written now too.
+ - No new tool, no new dependency, no interface change. Suite 417 passed.
+
 
 v1.10 (operator-authorised) — two halves, both driven by 46 days of live trace
 (2,061 event cycles, 3,329 LLM round-trips, 1,673 tool calls) read off the VM.
