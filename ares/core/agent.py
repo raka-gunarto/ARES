@@ -17,6 +17,7 @@ from ares.core.session import SessionManager
 from ares.core.tool import ToolContext, ToolRegistry, ToolResult
 from ares.core.trace import NullTracer, Tracer
 from ares.core.utils.logging import get_logger
+from ares.core.utils.text import unspoken_final
 
 log = get_logger(__name__)
 
@@ -232,6 +233,7 @@ class Agent:
             active_names = {t.name for t in active}
             iterations = 0
             spoke = False
+            spoken_texts: list[str] = []
             notified = False
             final_text = ""
 
@@ -313,6 +315,7 @@ class Agent:
 
                     if name == "speak" and result.ok:
                         spoke = True
+                        spoken_texts.append((args or {}).get("message") or "")
                     if name == "send_notification" and result.ok:
                         notified = True
 
@@ -363,7 +366,8 @@ class Agent:
             # is a control token, never a reply: the step-8 fallback used to
             # deliver it verbatim to the user on any user-initiated turn.
             ignored = is_ignore(final_text)
-            if user_initiated and not spoke and not ignored:
+            say_final = not spoke or unspoken_final(final_text, spoken_texts)
+            if user_initiated and not ignored and say_final:
                 await self.router.speak(event.user_id, final_text)
             elif not spoke and not notified:
                 log.info("agent chose silence for event %s", event.id)

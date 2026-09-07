@@ -1,12 +1,34 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.11. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.12. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.9 + v1.10 + v1.11. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12. ***
+
+v1.12 (operator-authorised) — stop dropping the final answer after a `speak`.
+Reported by the operator ("when it speaks or sends a notif the final reply gets
+hidden"); confirmed in the live trace.
+ - §4.10 step 8 only delivered final_text when NO speak happened. So when the
+   model called speak once as an ack ("On it, checking QR105's gate now") and
+   then wrote the real answer as its final message, that answer was neither
+   spoken nor logged — dropped. Trace had 36 turns where a substantive un-spoken
+   final followed a speak; the severe ones left the user hanging ("checking now"
+   then never "Gate C6"; a terminal lookup; an AC-set confirmation).
+ - Not fixable by always delivering the final: the OTHER shape is the model
+   speaking the full answer and its final being only a shorter note-to-self
+   ("Declined and explained — nothing further to do"), which must stay suppressed.
+ - Fix: `utils.text.unspoken_final(final, spoken_texts)` — deliver when the final
+   is >= the length of everything already spoken (answer-after-ack, not a summary
+   of a full reply), has >=4 content tokens (not filler like "done"/"Call ended"),
+   and shares <80% of its tokens with what was spoken (not a restatement). Wired
+   into step 8; still gated on user_initiated, IGNORE finals never delivered.
+ - Housed in utils.text so agent.py stays exactly at the 400-line limit (§0 r10).
+ - Trace replay: 7 previously-lost answers now delivered over 2 months, zero
+   internal status-notes leaked. Suite 425 passed. tests/test_unspoken_final.py.
+
 
 v1.11 (operator-authorised) — make the agent reach for §20 unprompted.
 Measured, not guessed: 4 days of live trace after v1.10 shipped (138 records

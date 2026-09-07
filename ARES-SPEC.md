@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.11
+# ARES — Implementation Specification v1.12
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -120,6 +120,21 @@ the return path — a finished run arrives as an ambient event, and every ambien
 event in that same window ended in `IGNORE`, so without it the answer the person
 waited for is silently swallowed. No new tool, no new dependency, no interface
 change; this only changes what the agent is told.
+
+v1.12 fixes a delivery bug in §4.10 step 8: a substantive final answer was
+silently dropped whenever the model had already called `speak` once in the turn —
+even if that `speak` was only an acknowledgement ("On it, checking now") and the
+real answer lived in the final assistant message. Live trace showed the failure
+repeatedly (a gate lookup where the caller heard "checking now" and never got
+"Gate C6"; a terminal lookup; an AC-set confirmation). Step 8 now also delivers
+the final message after a `speak` when `utils.text.unspoken_final` judges it a
+dropped answer rather than a note-to-self: it must be at least as long as
+everything already spoken (an answer after a brief ack, not a shorter summary of
+a full spoken reply), carry more than filler, and not merely restate what was
+spoken. Across two months of trace this delivers 7 previously-lost answers and
+leaks none of the internal status notes it must not speak. No new tool, no new
+dependency; `agent.py` stays within the 400-line limit by housing the decision in
+`utils.text`.
 
 ---
 
@@ -655,9 +670,15 @@ forced-final turn.
      more with `tools=None`, then treat as final.
    - If the reply has content and no tool calls: final.
 8. Final assistant text handling:
-   - If the event was user-initiated (step-4 first case) and **no `speak` tool
-     call happened** during the loop: `await router.speak(user_id, text)` —
-     the user must always get a reply to direct input.
+   - If the event was user-initiated (step-4 first case): `await
+     router.speak(user_id, text)` when **no `speak` tool call happened** during
+     the loop, OR when the model called `speak` only to acknowledge and then put
+     the real answer in its final message (`utils.text.unspoken_final`: the final
+     is at least as long as everything already spoken, carries more than filler,
+     and is not a restatement of it). The user must always get a reply to direct
+     input, and an answer the model wrote as its final message instead of speaking
+     must not be silently dropped. An IGNORE final (`prompt.is_ignore`) is never
+     delivered.
    - If the event was ambient and no speak/notify was called: do nothing
      (empty/short final text means the agent chose silence). Log it.
 9. `sessions.append_history(user, "user", event_message_text)` and
