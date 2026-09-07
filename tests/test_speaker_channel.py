@@ -45,23 +45,63 @@ def _session() -> Session:
 # --- SpeakerChannel -------------------------------------------------------
 
 
+# Piper-style config (tts.speak with a tts engine entity + media_player in data),
+# matching the live HA. The legacy *_say shape is exercised separately below.
+def _piper(ha, presence):
+    return SpeakerChannel(
+        ha,
+        presence,
+        service_entity="tts.piper",
+        service_data={"media_player_entity_id": "media_player.living_room_nest"},
+        tts_domain="tts",
+        tts_service="speak",
+    )
+
+
 @pytest.mark.asyncio
 async def test_speaker_announces_when_home():
     ha = FakeHA({"person.raka": "home"})
-    ch = SpeakerChannel(ha, "media_player.bedroom", ["person.raka"])
+    ch = _piper(ha, ["person.raka"])
 
     ok = await ch.deliver("primary", "dinner is ready", _session())
 
     assert ok is True
     assert ha.calls == [
-        ("tts", "google_translate_say", "media_player.bedroom", {"message": "dinner is ready"})
+        (
+            "tts",
+            "speak",
+            "tts.piper",
+            {
+                "media_player_entity_id": "media_player.living_room_nest",
+                "message": "dinner is ready",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speaker_supports_legacy_say_shape():
+    # *_say: service_entity IS the media_player, no service_data.
+    ha = FakeHA({"person.raka": "home"})
+    ch = SpeakerChannel(
+        ha,
+        ["person.raka"],
+        service_entity="media_player.bedroom",
+        tts_service="google_translate_say",
+    )
+
+    ok = await ch.deliver("primary", "hi", _session())
+
+    assert ok is True
+    assert ha.calls == [
+        ("tts", "google_translate_say", "media_player.bedroom", {"message": "hi"})
     ]
 
 
 @pytest.mark.asyncio
 async def test_speaker_declines_when_away():
     ha = FakeHA({"person.raka": "not_home"})
-    ch = SpeakerChannel(ha, "media_player.bedroom", ["person.raka"])
+    ch = _piper(ha, ["person.raka"])
 
     ok = await ch.deliver("primary", "hello", _session())
 
@@ -72,7 +112,7 @@ async def test_speaker_declines_when_away():
 @pytest.mark.asyncio
 async def test_speaker_home_if_any_presence_entity_home():
     ha = FakeHA({"person.raka": "not_home", "person.nadya": "home"})
-    ch = SpeakerChannel(ha, "media_player.bedroom", ["person.raka", "person.nadya"])
+    ch = _piper(ha, ["person.raka", "person.nadya"])
 
     assert await ch.deliver("primary", "hi", _session()) is True
 
@@ -80,7 +120,7 @@ async def test_speaker_home_if_any_presence_entity_home():
 @pytest.mark.asyncio
 async def test_speaker_declines_when_unconfigured():
     ha = FakeHA({"person.raka": "home"})
-    ch = SpeakerChannel(ha, "", [])  # no media_player, no presence entities
+    ch = SpeakerChannel(ha, [], service_entity="")  # no target, no presence
 
     assert await ch.deliver("primary", "hi", _session()) is False
     assert ha.calls == []
@@ -89,7 +129,7 @@ async def test_speaker_declines_when_unconfigured():
 @pytest.mark.asyncio
 async def test_speaker_declines_when_ha_presence_unreachable():
     ha = FakeHA({"person.raka": "home"}, fail_state=True)
-    ch = SpeakerChannel(ha, "media_player.bedroom", ["person.raka"])
+    ch = _piper(ha, ["person.raka"])
 
     # Can't confirm anyone is home -> decline (router falls to PUSH).
     assert await ch.deliver("primary", "hi", _session()) is False
@@ -99,7 +139,7 @@ async def test_speaker_declines_when_ha_presence_unreachable():
 async def test_speaker_declines_when_announce_fails():
     ha = FakeHA({"person.raka": "home"})
     ha.call_raises = True
-    ch = SpeakerChannel(ha, "media_player.bedroom", ["person.raka"])
+    ch = _piper(ha, ["person.raka"])
 
     assert await ch.deliver("primary", "hi", _session()) is False
 
@@ -107,7 +147,10 @@ async def test_speaker_declines_when_announce_fails():
 @pytest.mark.asyncio
 async def test_speaker_passes_language_when_set():
     ha = FakeHA({"person.raka": "home"})
-    ch = SpeakerChannel(ha, "media_player.bedroom", ["person.raka"], language="en")
+    ch = SpeakerChannel(
+        ha, ["person.raka"], service_entity="media_player.bedroom",
+        tts_service="google_translate_say", language="en",
+    )
 
     await ch.deliver("primary", "hi", _session())
 

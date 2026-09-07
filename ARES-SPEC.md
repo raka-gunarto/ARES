@@ -144,8 +144,10 @@ returns `False` unless the dashboard has long-polled within a short presence
 window, letting the router fall through. A new optional `SPEAKER` channel sits
 ahead of `PUSH` in the `speak` fallback: when a configured presence entity
 (`person.*`) reads `home`, it announces the message aloud on a Home Assistant
-`media_player` via TTS; when no one is home it declines and delivery continues
-to `PUSH` (the phone). The speaker plugin receives the HA service by injection
+speaker via TTS (a generic `tts` service call configured to fit either the
+modern `tts.speak` shape or a legacy `tts.<engine>_say`); when no one is home it
+declines and delivery continues to `PUSH` (the phone). The speaker plugin
+receives the HA service by injection
 (no plugin-to-plugin import) and is wired only when Home Assistant is enabled
 and a `speaker` config block is present. No new tool, no new dependency.
 

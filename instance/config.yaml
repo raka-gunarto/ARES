@@ -99,10 +99,16 @@ plugins:
   # enabled. Announces only when a presence entity reads "home".
   speaker:
     enabled: false
-    media_player: media_player.living_room
     presence_entities: [person.primary]
+    # Generic TTS call, fits both HA shapes:
+    #   modern tts.speak  -> service_entity is the TTS engine (e.g. tts.piper),
+    #                        service_data names the target speaker.
+    #   legacy tts.*_say  -> service_entity is the media_player, service_data {}.
     tts_domain: tts
-    tts_service: google_translate_say   # HA TTS service that takes the media_player as entity_id
+    tts_service: speak
+    service_entity: tts.piper
+    service_data:
+      media_player_entity_id: media_player.living_room
     tts_field: message                  # message field name the TTS service expects
     # language: en                      # optional, passed to the TTS service
   voice:

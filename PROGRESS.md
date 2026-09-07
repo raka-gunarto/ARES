@@ -21,14 +21,16 @@ speaks to no one. Check if I'm home and use a speaker, else SMS or push").
  - Fix B (SPEAKER channel): new `ares/plugins/channels/speaker.py`
    (ChannelType.SPEAKER), wired ahead of PUSH in `router.speak`. It reads HA
    presence (`person.*` == "home") and, if home, announces the message aloud on
-   an HA `media_player` via TTS (`tts.google_translate_say` by default); if no
-   one is home / HA unreachable it returns False and delivery continues to PUSH
-   (the phone). HA service injected (no plugin→plugin import; rule 14 safe).
-   Wired only when home_assistant is enabled and a `speaker` config block exists.
- - Live HA facts used: presence = person.raka (home), speaker =
-   media_player.bedroom, tts.google_translate_say installed. Config is manual
-   (rootfs) — the code auto-deploys; the `speaker` block must be added to the
-   live config + restart before it takes effect.
+   an HA speaker via a configurable TTS call (generic `service_entity` +
+   `service_data`, fits `tts.speak` or legacy `tts.*_say`); if no one is home /
+   HA unreachable it returns False and delivery continues to PUSH (the phone).
+   HA service injected (no plugin→plugin import; rule 14 safe). Wired only when
+   home_assistant is enabled and a `speaker` config block exists.
+ - Live HA facts used: presence = person.raka (home); operator chose speaker =
+   media_player.living_room_nest via Piper (tts.speak, service_entity=tts.piper,
+   service_data.media_player_entity_id=media_player.living_room_nest). Config is
+   manual (rootfs) — the code auto-deploys; the `speaker` block must be added to
+   the live config + restart before it takes effect.
  - Suite 437 passed. tests/test_speaker_channel.py (speaker home/away, web
    presence gate, router SPEAKER-before-PUSH ordering).
 

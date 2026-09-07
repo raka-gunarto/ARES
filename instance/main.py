@@ -301,10 +301,11 @@ async def main(config_path: str) -> None:
         router.register(
             SpeakerChannel(
                 ha_service=ha_service,
-                media_player=speaker_config.get("media_player", ""),
                 presence_entities=speaker_config.get("presence_entities", []),
+                service_entity=speaker_config.get("service_entity", ""),
+                service_data=speaker_config.get("service_data", {}),
                 tts_domain=speaker_config.get("tts_domain", "tts"),
-                tts_service=speaker_config.get("tts_service", "google_translate_say"),
+                tts_service=speaker_config.get("tts_service", "speak"),
                 tts_field=speaker_config.get("tts_field", "message"),
                 language=speaker_config.get("language"),
             )

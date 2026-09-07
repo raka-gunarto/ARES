@@ -32,34 +32,45 @@ class SpeakerChannel(BaseChannel):
     def __init__(
         self,
         ha_service: typing.Any,
-        media_player: str,
         presence_entities: list[str],
+        service_entity: str,
+        service_data: dict | None = None,
         tts_domain: str = "tts",
-        tts_service: str = "google_translate_say",
+        tts_service: str = "speak",
         tts_field: str = "message",
         language: str | None = None,
     ) -> None:
         """
         Initialize the speaker channel.
 
+        The call is expressed generically so it fits both HA TTS shapes:
+
+        * modern `tts.speak` — ``service_entity`` is the TTS engine entity
+          (e.g. ``tts.piper``) and ``service_data`` names the target speaker,
+          e.g. ``{"media_player_entity_id": "media_player.living_room_nest"}``;
+        * legacy ``tts.<engine>_say`` — ``service_entity`` is the media_player
+          itself and ``service_data`` is empty.
+
         Args:
             ha_service: The Home Assistant service (duck-typed: needs
                 get_state(entity_id) and call_service(domain, service,
                 entity_id, data)).
-            media_player: The media_player entity to announce on
-                (e.g. "media_player.bedroom").
             presence_entities: Entities whose state == "home" means someone is
                 present (e.g. ["person.raka"]). Empty disables the channel.
+            service_entity: The entity_id the TTS service is called against.
+                Empty disables the channel.
+            service_data: Static data merged into every call (e.g. the target
+                media_player for `tts.speak`).
             tts_domain: HA service domain for TTS (default "tts").
-            tts_service: HA TTS service that takes the media_player as its
-                entity_id (default "google_translate_say").
+            tts_service: HA TTS service to call (default "speak").
             tts_field: The message field name the TTS service expects
                 (default "message").
             language: Optional language code passed to the TTS service.
         """
         self.ha = ha_service
-        self.media_player = media_player
         self.presence_entities = list(presence_entities or [])
+        self.service_entity = service_entity
+        self.service_data = dict(service_data or {})
         self.tts_domain = tts_domain
         self.tts_service = tts_service
         self.tts_field = tts_field
@@ -85,21 +96,21 @@ class SpeakerChannel(BaseChannel):
 
         Returns:
             True if the announcement was sent; False if the channel is
-            unconfigured, no one is home, or the TTS call failed (so the
-            router falls through to PUSH).
+            unconfigured (no service_entity or presence entities), no one is
+            home, or the TTS call failed (so the router falls through to PUSH).
         """
-        if not self.media_player or not self.presence_entities:
+        if not self.service_entity or not self.presence_entities:
             return False
         try:
             if not await self._anyone_home():
                 return False
-            data: dict[str, typing.Any] = {self.tts_field: message}
+            data: dict[str, typing.Any] = {**self.service_data, self.tts_field: message}
             if self.language:
                 data["language"] = self.language
             await self.ha.call_service(
-                self.tts_domain, self.tts_service, self.media_player, data
+                self.tts_domain, self.tts_service, self.service_entity, data
             )
-            logger.info("speaker: announced on %s for %s", self.media_player, user_id)
+            logger.info("speaker: announced via %s for %s", self.service_entity, user_id)
             return True
         except Exception as e:
             logger.error("speaker: announce failed for %s: %s", user_id, e)
