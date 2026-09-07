@@ -93,6 +93,18 @@ plugins:
         priority: HIGH
     entity_rooms:
       binary_sensor.kitchen_motion: kitchen
+  # SPEAKER delivery (§4.5): when ARES wants to speak but the user is off the
+  # active channel, announce aloud on a Home Assistant media_player if someone
+  # is home; otherwise the router falls through to push. Needs home_assistant
+  # enabled. Announces only when a presence entity reads "home".
+  speaker:
+    enabled: false
+    media_player: media_player.living_room
+    presence_entities: [person.primary]
+    tts_domain: tts
+    tts_service: google_translate_say   # HA TTS service that takes the media_player as entity_id
+    tts_field: message                  # message field name the TTS service expects
+    # language: en                      # optional, passed to the TTS service
   voice:
     enabled: false
     whisper_model: small

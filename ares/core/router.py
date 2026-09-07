@@ -34,9 +34,17 @@ class ResponseRouter:
         """
         Deliver a message via the user's active channel with fallback logic.
 
-        Attempts delivery in order: active_channel → PUSH → CONSOLE.
+        Attempts delivery in order: active_channel → SPEAKER → PUSH → CONSOLE.
         On channel failure or missing channel, continues to next fallback.
         Logs an error if all channels fail.
+
+        The fallback exists because a channel can *accept* a message that no one
+        is actually there to receive: the web dashboard's outbox returns False
+        when the browser has stopped long-polling, so a spoken reply written to
+        an abandoned web session falls through here instead of vanishing into a
+        queue. SPEAKER sits ahead of PUSH so that, when the user is physically
+        home, ARES announces on a room speaker; SPEAKER declines (returns False)
+        when no one is home, and delivery continues to PUSH (their phone).
 
         Args:
             user_id: The user ID.
@@ -60,8 +68,12 @@ class ResponseRouter:
                     e,
                 )
 
-        # Fallback order: PUSH, then CONSOLE
-        for fallback_type in [ChannelType.PUSH, ChannelType.CONSOLE]:
+        # Fallback order: SPEAKER (announce if home), then PUSH, then CONSOLE
+        for fallback_type in [
+            ChannelType.SPEAKER,
+            ChannelType.PUSH,
+            ChannelType.CONSOLE,
+        ]:
             # Skip if it's the channel we already tried
             if fallback_type == primary_channel_type:
                 continue

@@ -84,6 +84,7 @@ from ares.plugins.channels.console import ConsoleChannel
 from ares.plugins.channels.push_ntfy import NtfyChannel
 from ares.plugins.channels.sip_call import SIPCallChannel
 from ares.plugins.channels.sip_message import SIPMessageChannel
+from ares.plugins.channels.speaker import SpeakerChannel
 from ares.plugins.channels.voice_tts import VoiceTTSChannel
 from ares.plugins.critical.safety import FireHandler, IntruderHandler
 from ares.plugins.dashboard.channel import WebChannel
@@ -291,6 +292,23 @@ async def main(config_path: str) -> None:
             registry.register(t)
         ha_source = HomeAssistantSource(bus, ha_config, ha_service, sessions)
         sources.append(ha_source)
+
+    # SPEAKER delivery: announce ARES's speech on an HA media_player when the
+    # user is home but off the active channel. Needs Home Assistant, so it is
+    # wired only when HA is up (ha_service set above).
+    speaker_config = config.plugins.get("speaker", {})
+    if speaker_config.get("enabled") and ha_service is not None:
+        router.register(
+            SpeakerChannel(
+                ha_service=ha_service,
+                media_player=speaker_config.get("media_player", ""),
+                presence_entities=speaker_config.get("presence_entities", []),
+                tts_domain=speaker_config.get("tts_domain", "tts"),
+                tts_service=speaker_config.get("tts_service", "google_translate_say"),
+                tts_field=speaker_config.get("tts_field", "message"),
+                language=speaker_config.get("language"),
+            )
+        )
 
     voice_config = config.plugins.get("voice", {})
     if voice_config.get("enabled"):

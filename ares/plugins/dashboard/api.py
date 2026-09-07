@@ -121,6 +121,10 @@ def build_app(
         `since` is accepted for future cursor-based use but ignored in v1 --
         the outbox is a plain queue, drained in FIFO order.
         """
+        # This poll is the web channel's only liveness signal: mark it so
+        # speak() delivers here while the dashboard is open, and falls through
+        # to speaker/push once it closes.
+        web_channel.mark_poll("primary")
         q: asyncio.Queue = web_channel.outbox("primary")
         try:
             msg = await asyncio.wait_for(q.get(), timeout=25)

@@ -15,6 +15,7 @@ class ChannelType(enum.StrEnum):
     VOICE = "voice"
     SIP_CALL = "sip_call"
     SIP_MESSAGE = "sip_message"
+    SPEAKER = "speaker"
     PUSH = "push"
     CONSOLE = "console"
     WEB = "web"

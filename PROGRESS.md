@@ -1,12 +1,37 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.12. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.13. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13. ***
+
+v1.13 (operator-authorised) — presence-aware delivery; stop "speaking to no one."
+Reported by the operator ("I'm not always on the web channel ... sometimes it
+speaks to no one. Check if I'm home and use a speaker, else SMS or push").
+ - Root cause: `WebChannel.deliver` queued every `speak` to an in-memory outbox
+   and returned True even when no browser was long-polling, so `router.speak`'s
+   PUSH→CONSOLE fallback never fired — the reply sat in a queue no one drained.
+ - Fix A (presence gate): the dashboard poll endpoint marks liveness
+   (`WebChannel.mark_poll`); `deliver` returns False unless a poll landed within
+   PRESENCE_WINDOW_S (60s), so an abandoned web session falls through. Doesn't
+   re-queue when absent (would show a stale dup on next open).
+ - Fix B (SPEAKER channel): new `ares/plugins/channels/speaker.py`
+   (ChannelType.SPEAKER), wired ahead of PUSH in `router.speak`. It reads HA
+   presence (`person.*` == "home") and, if home, announces the message aloud on
+   an HA `media_player` via TTS (`tts.google_translate_say` by default); if no
+   one is home / HA unreachable it returns False and delivery continues to PUSH
+   (the phone). HA service injected (no plugin→plugin import; rule 14 safe).
+   Wired only when home_assistant is enabled and a `speaker` config block exists.
+ - Live HA facts used: presence = person.raka (home), speaker =
+   media_player.bedroom, tts.google_translate_say installed. Config is manual
+   (rootfs) — the code auto-deploys; the `speaker` block must be added to the
+   live config + restart before it takes effect.
+ - Suite 437 passed. tests/test_speaker_channel.py (speaker home/away, web
+   presence gate, router SPEAKER-before-PUSH ordering).
+
 
 v1.12 (operator-authorised) — stop dropping the final answer after a `speak`.
 Reported by the operator ("when it speaks or sends a notif the final reply gets

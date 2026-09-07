@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.12
+# ARES — Implementation Specification v1.13
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -135,6 +135,19 @@ spoken. Across two months of trace this delivers 7 previously-lost answers and
 leaks none of the internal status notes it must not speak. No new tool, no new
 dependency; `agent.py` stays within the 400-line limit by housing the decision in
 `utils.text`.
+
+v1.13 makes delivery presence-aware (§4.5). The `WEB` channel used to accept
+every `speak` into an in-memory outbox and return `True` even when no browser
+was polling, so a reply spoken while the user was away from the dashboard was
+lost to a queue no one drained — "speaking to no one." `WebChannel.deliver` now
+returns `False` unless the dashboard has long-polled within a short presence
+window, letting the router fall through. A new optional `SPEAKER` channel sits
+ahead of `PUSH` in the `speak` fallback: when a configured presence entity
+(`person.*`) reads `home`, it announces the message aloud on a Home Assistant
+`media_player` via TTS; when no one is home it declines and delivery continues
+to `PUSH` (the phone). The speaker plugin receives the HA service by injection
+(no plugin-to-plugin import) and is wired only when Home Assistant is enabled
+and a `speaker` config block is present. No new tool, no new dependency.
 
 ---
 
@@ -486,6 +499,7 @@ class ChannelType(enum.StrEnum):
     VOICE = "voice"
     SIP_CALL = "sip_call"
     SIP_MESSAGE = "sip_message"
+    SPEAKER = "speaker"
     PUSH = "push"
     CONSOLE = "console"
     WEB = "web"
@@ -505,9 +519,21 @@ class ResponseRouter:
 
 `speak`: read the user's session **at delivery time**, pick the channel matching
 `session.active_channel`, call `deliver`. On failure or missing channel, fall
-back in order: `PUSH` → `CONSOLE`. `notify`: always the `PUSH` channel,
-falling back to `CONSOLE`. Room resolution for voice happens **inside** the
-voice channel at delivery time using `session.current_room`.
+back in order: `SPEAKER` → `PUSH` → `CONSOLE`. `notify`: always the `PUSH`
+channel, falling back to `CONSOLE`. Room resolution for voice happens **inside**
+the voice channel at delivery time using `session.current_room`.
+
+A `deliver` returning `False` means "no one received this," not only "an error
+occurred": the `WEB` channel returns `False` when the browser has not
+long-polled within a short presence window (default 60s), so a reply written to
+an abandoned dashboard session falls through the fallback chain instead of
+piling into an outbox no one drains. `SPEAKER` (delivered by an optional plugin
+on `media_player` TTS via Home Assistant) sits ahead of `PUSH`: it announces the
+message aloud when a configured presence entity reads `home`, and returns
+`False` when no one is home so delivery continues to `PUSH` (the user's phone).
+The `SPEAKER` plugin receives the Home Assistant service by injection and is
+wired only when Home Assistant is enabled; with no `speaker` config block it is
+never registered and the chain is `PUSH` → `CONSOLE` as before.
 
 ### 4.6 `core/session.py`
 
