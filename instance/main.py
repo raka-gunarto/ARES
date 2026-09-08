@@ -297,19 +297,19 @@ async def main(config_path: str) -> None:
     # user is home but off the active channel. Needs Home Assistant, so it is
     # wired only when HA is up (ha_service set above).
     speaker_config = config.plugins.get("speaker", {})
+    speaker_channel: SpeakerChannel | None = None
     if speaker_config.get("enabled") and ha_service is not None:
-        router.register(
-            SpeakerChannel(
-                ha_service=ha_service,
-                presence_entities=speaker_config.get("presence_entities", []),
-                service_entity=speaker_config.get("service_entity", ""),
-                service_data=speaker_config.get("service_data", {}),
-                tts_domain=speaker_config.get("tts_domain", "tts"),
-                tts_service=speaker_config.get("tts_service", "speak"),
-                tts_field=speaker_config.get("tts_field", "message"),
-                language=speaker_config.get("language"),
-            )
+        speaker_channel = SpeakerChannel(
+            ha_service=ha_service,
+            presence_entities=speaker_config.get("presence_entities", []),
+            service_entity=speaker_config.get("service_entity", ""),
+            service_data=speaker_config.get("service_data", {}),
+            tts_domain=speaker_config.get("tts_domain", "tts"),
+            tts_service=speaker_config.get("tts_service", "speak"),
+            tts_field=speaker_config.get("tts_field", "message"),
+            language=speaker_config.get("language"),
         )
+        router.register(speaker_channel)
 
     voice_config = config.plugins.get("voice", {})
     if voice_config.get("enabled"):
@@ -438,6 +438,13 @@ async def main(config_path: str) -> None:
             DashboardSource(
                 bus, dash_config, web_channel, memory, tasks, priv_store,
                 pr_cache.all, trace_file,
+                router=router,
+                subagent_manager=subagent_manager,
+                home_provider=(
+                    speaker_channel.anyone_home
+                    if speaker_channel is not None
+                    else None
+                ),
             )
         )
 

@@ -163,9 +163,11 @@ async def test_speaker_passes_language_when_set():
 @pytest.mark.asyncio
 async def test_web_declines_without_a_poll():
     web = WebChannel()
-    # No browser has ever polled -> no listener.
+    # No browser has ever polled -> not present -> router falls through.
     assert await web.deliver("primary", "hi", _session()) is False
-    assert web.outbox("primary").empty()
+    # The reply is still buffered so a browser that opens later can replay it,
+    # but presence (the return value) is what governs the router's fallback.
+    assert web.messages_since("primary", 0) == (["hi"], 1)
 
 
 @pytest.mark.asyncio
@@ -173,7 +175,7 @@ async def test_web_delivers_while_a_poll_is_connected():
     web = WebChannel()
     web.poll_started("primary")  # a long-poll is in flight
     assert await web.deliver("primary", "hi", _session()) is True
-    assert web.outbox("primary").get_nowait() == "hi"
+    assert web.messages_since("primary", 0) == (["hi"], 1)
 
 
 @pytest.mark.asyncio
@@ -192,8 +194,8 @@ async def test_web_declines_after_last_poll_closed_and_grace_elapsed():
     web.poll_finished("primary")
     web._last_poll["primary"] = time.monotonic() - (PRESENCE_GRACE_S + 1)
     assert web._waiters.get("primary", 0) == 0
+    # Not present -> deliver returns False so the router falls through to push.
     assert await web.deliver("primary", "hi", _session()) is False
-    assert web.outbox("primary").empty()  # not queued -> router falls to push
 
 
 @pytest.mark.asyncio
@@ -203,6 +205,54 @@ async def test_web_present_while_any_poll_in_flight_even_if_one_closed():
     web.poll_started("primary")
     web.poll_finished("primary")  # one closed, one still connected
     assert await web.deliver("primary", "hi", _session()) is True
+
+
+# --- WebChannel cursor replay (the residual v1.14 fix) --------------------
+
+
+@pytest.mark.asyncio
+async def test_web_fresh_cursor_starts_from_now():
+    # A fresh page load (since=None) gets no backlog, just the current cursor.
+    web = WebChannel()
+    web.poll_started("primary")
+    await web.deliver("primary", "old", _session())
+    assert web.messages_since("primary", None) == ([], 1)
+
+
+@pytest.mark.asyncio
+async def test_web_cursor_replays_missed_message_on_reconnect():
+    # The residual race: a reply lands while the tab is frozen; on reconnect the
+    # browser re-polls from its last cursor and catches up (nothing is lost).
+    web = WebChannel()
+    web.poll_started("primary")
+    await web.deliver("primary", "one", _session())  # seq 1, browser saw it
+    # Tab suspends; the reply committed to its in-flight poll never arrives.
+    await web.deliver("primary", "two", _session())  # seq 2, "missed"
+    # On wake it re-polls from cursor 1 and gets everything after it.
+    assert web.messages_since("primary", 1) == (["two"], 2)
+
+
+@pytest.mark.asyncio
+async def test_web_cursor_ahead_of_server_resyncs():
+    # After a daemon restart the sequence resets; a browser holding an older,
+    # larger cursor must resync (replay the buffer), not silently skip.
+    web = WebChannel()
+    web.poll_started("primary")
+    await web.deliver("primary", "post-restart", _session())  # seq 1
+    # Browser still thinks it's at cursor 5 from before the restart.
+    assert web.messages_since("primary", 5) == (["post-restart"], 1)
+
+
+@pytest.mark.asyncio
+async def test_web_buffer_is_bounded():
+    from ares.plugins.dashboard.channel import MAX_BUFFER
+
+    web = WebChannel()
+    for i in range(MAX_BUFFER + 50):
+        await web.deliver("primary", str(i), _session())
+    msgs, cursor = web.messages_since("primary", 0)
+    assert cursor == MAX_BUFFER + 50  # cursor keeps counting
+    assert len(msgs) == MAX_BUFFER  # but only the tail is retained
 
 
 # --- Router fallback ordering ---------------------------------------------

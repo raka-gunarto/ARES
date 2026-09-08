@@ -157,6 +157,27 @@ async def test_search_tools_cannot_widen_the_allowlist(tmp_path):
     await store.aclose()
 
 
+# ---- dashboard listing (§20 panel) -----------------------------------------
+
+async def test_list_all_runs_includes_finished_runs(tmp_path):
+    """The dashboard panel shows recent finished runs, not just open ones."""
+    llm = _FakeLLM([{"role": "assistant", "content": "the report"}])
+    mgr, store, _, _ = await _mgr(tmp_path, llm)
+    task, _ = await mgr.spawn("primary", "research jakarta", title="Jakarta")
+    await _drain(mgr, task.id)
+
+    # list_runs is open-only: a finished run has dropped off it.
+    assert task.id not in {r["run_id"] for r in await mgr.list_runs("primary")}
+    # list_all_runs picks the finished run back up from history.
+    all_runs = await mgr.list_all_runs("primary")
+    match = [r for r in all_runs if r["run_id"] == task.id]
+    assert len(match) == 1
+    assert match[0]["status"] == "done"
+    assert match[0]["result"] == "the report"
+    assert match[0]["ended_at"] is not None
+    await store.aclose()
+
+
 # ---- durability and bounds (§20.1, §20.4) ----------------------------------
 
 async def test_a_run_is_a_task_row_and_closes_when_done(tmp_path):

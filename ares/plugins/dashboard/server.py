@@ -55,6 +55,9 @@ class DashboardSource(BaseSource):
         priv_store: Any,
         prs_provider: Any = None,
         trace_file: Any = None,
+        router: Any = None,
+        subagent_manager: Any = None,
+        home_provider: Any = None,
     ) -> None:
         """Initialize the dashboard source.
 
@@ -72,6 +75,15 @@ class DashboardSource(BaseSource):
                 `build_app`.
             prs_provider: optional zero-arg callable returning the list of
                 open self-edit PRs (§18); defaults to returning an empty list.
+            trace_file: optional path to the activity-trace JSONL; the
+                /api/trace endpoint tails it. None disables tracing.
+            router: optional ResponseRouter, read for `last_channel` (where the
+                most recent spoken reply actually landed) in /api/status.
+            subagent_manager: optional SubagentManager (§20); its recent runs
+                are surfaced at /api/subagents. None => that endpoint returns [].
+            home_provider: optional async zero-arg callable () -> bool telling
+                whether someone is home (the speaker channel's presence check),
+                surfaced in /api/status. None => home reads as unknown.
 
         Raises:
             ConfigError: If `password` is missing/empty.
@@ -103,6 +115,10 @@ class DashboardSource(BaseSource):
         # Path to the live activity-trace file (rotating JSONL), or None when
         # tracing is disabled; the /api/trace endpoint tails it.
         self.trace_file = trace_file
+        # Optional collaborators feeding the presence badge and subagents panel.
+        self.router = router
+        self.subagent_manager = subagent_manager
+        self.home_provider = home_provider
 
         self._start_time: float | None = None
         self._server: "uvicorn.Server | None" = None
@@ -135,10 +151,46 @@ class DashboardSource(BaseSource):
             uptime = time.monotonic() - self._start_time
         queue_depths: dict[str, int] = {}
         try:
-            queue_depths["web_outbox"] = self.web_channel.outbox("primary").qsize()
+            queue_depths["web_buffer"] = self.web_channel.pending_count("primary")
         except Exception:
-            log.exception("dashboard: failed to compute web_outbox depth")
+            log.exception("dashboard: failed to compute web_buffer depth")
         return {"ok": True, "uptime": uptime, "queue_depths": queue_depths}
+
+    async def _status_provider(self) -> dict:
+        """Where a reply would land right now: web presence, last channel, home.
+
+        Never raises: a failing home read degrades to unknown (None) rather than
+        breaking the status endpoint.
+        """
+        web_present = False
+        try:
+            web_present = self.web_channel.is_present("primary")
+        except Exception:
+            log.exception("dashboard: failed to read web presence")
+        last_channel = None
+        if self.router is not None:
+            last_channel = getattr(self.router, "last_channel", {}).get("primary")
+        home: bool | None = None
+        if self.home_provider is not None:
+            try:
+                home = bool(await self.home_provider())
+            except Exception:
+                log.exception("dashboard: failed to read home presence")
+                home = None
+        return {"web_present": web_present, "last_channel": last_channel, "home": home}
+
+    async def _subagents_provider(self) -> list[dict]:
+        """Recent background runs for the subagents panel (spec §20).
+
+        Never raises: any failure degrades to an empty list.
+        """
+        if self.subagent_manager is None:
+            return []
+        try:
+            return await self.subagent_manager.list_all_runs("primary")
+        except Exception:
+            log.exception("dashboard: failed to list subagent runs")
+            return []
 
     async def start(self) -> None:
         """Build the FastAPI app and run uvicorn until stopped.
@@ -163,6 +215,8 @@ class DashboardSource(BaseSource):
             health_provider=self._health_provider,
             static_dir=static_dir,
             trace_file=self.trace_file,
+            status_provider=self._status_provider,
+            subagents_provider=self._subagents_provider,
         )
 
         config = uvicorn.Config(

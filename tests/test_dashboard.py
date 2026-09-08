@@ -395,19 +395,36 @@ class TestPollPresence:
     so web-channel presence reflects a live connection (v1.13 fix)."""
 
     @pytest.mark.asyncio
-    async def test_poll_returns_queued_message_and_clears_waiter(
+    async def test_poll_returns_buffered_message_after_cursor_and_clears_waiter(
         self, client: httpx.AsyncClient, web_channel: WebChannel
     ) -> None:
-        # Pre-load the outbox so the long-poll returns immediately (no 25s wait).
-        web_channel.outbox("primary").put_nowait("hello")
+        # Buffer a message (seq 1), then poll from cursor 0 so it returns
+        # immediately (no 25s wait) with the advanced cursor.
+        await web_channel.deliver("primary", "hello", None)  # type: ignore[arg-type]
+        resp = await client.get(
+            "/api/chat/poll?since=0", headers={"Authorization": f"Bearer {TOKEN}"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["messages"] == ["hello"]
+        assert body["cursor"] == 1
+        # finally-block ran: no lingering waiter, and the close was timestamped.
+        assert web_channel._waiters.get("primary", 0) == 0
+        assert "primary" in web_channel._last_poll
+
+    @pytest.mark.asyncio
+    async def test_fresh_poll_returns_no_backlog(
+        self, client: httpx.AsyncClient, web_channel: WebChannel
+    ) -> None:
+        # A fresh load (no since) must not replay old history — just the cursor.
+        await web_channel.deliver("primary", "old", None)  # type: ignore[arg-type]
         resp = await client.get(
             "/api/chat/poll", headers={"Authorization": f"Bearer {TOKEN}"}
         )
         assert resp.status_code == 200
-        assert resp.json()["messages"] == ["hello"]
-        # finally-block ran: no lingering waiter, and the close was timestamped.
-        assert web_channel._waiters.get("primary", 0) == 0
-        assert "primary" in web_channel._last_poll
+        body = resp.json()
+        assert body["messages"] == []
+        assert body["cursor"] == 1
 
     @pytest.mark.asyncio
     async def test_present_while_poll_in_flight_absent_after(
@@ -430,3 +447,99 @@ class TestPollPresence:
         # After it closes and the grace elapses, the session reads as absent.
         web_channel._last_poll["primary"] = time.monotonic() - 999
         assert web_channel.is_present("primary") is False
+
+
+class TestStatusAndSubagents:
+    """/api/status (presence badge) and /api/subagents (background runs panel)."""
+
+    @staticmethod
+    async def _client(app: Any) -> httpx.AsyncClient:
+        transport = httpx.ASGITransport(app=app)
+        return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    def _app(self, web_channel, memory, tasks_stub, priv_store, **extra):
+        async def emit_chat(text: str) -> None:
+            return None
+
+        static_dir = (
+            Path(__file__).parent.parent / "ares" / "plugins" / "dashboard" / "static"
+        )
+        return build_app(
+            token=TOKEN,
+            emit_chat=emit_chat,
+            web_channel=web_channel,
+            memory=memory,
+            tasks=tasks_stub,
+            priv_store=priv_store,
+            prs_provider=lambda: [],
+            health_provider=lambda: {"ok": True, "uptime": 0.0, "queue_depths": {}},
+            static_dir=static_dir,
+            **extra,
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_falls_back_without_provider(
+        self, app: Any
+    ) -> None:
+        async with await self._client(app) as c:
+            resp = await c.get(
+                "/api/status", headers={"Authorization": f"Bearer {TOKEN}"}
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["last_channel"] is None
+        assert body["home"] is None
+        assert "web_present" in body
+
+    @pytest.mark.asyncio
+    async def test_status_uses_provider(
+        self, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        async def status_provider() -> dict:
+            return {"web_present": False, "last_channel": "speaker", "home": True}
+
+        app = self._app(
+            web_channel, memory, tasks_stub, priv_store,
+            status_provider=status_provider,
+        )
+        async with await self._client(app) as c:
+            resp = await c.get(
+                "/api/status", headers={"Authorization": f"Bearer {TOKEN}"}
+            )
+        assert resp.json() == {
+            "web_present": False, "last_channel": "speaker", "home": True
+        }
+
+    @pytest.mark.asyncio
+    async def test_subagents_empty_without_provider(self, app: Any) -> None:
+        async with await self._client(app) as c:
+            resp = await c.get(
+                "/api/subagents", headers={"Authorization": f"Bearer {TOKEN}"}
+            )
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @pytest.mark.asyncio
+    async def test_subagents_uses_provider(
+        self, web_channel, memory, tasks_stub, priv_store
+    ) -> None:
+        runs = [{"run_id": "r1", "title": "dig", "status": "running"}]
+
+        async def subagents_provider() -> list:
+            return runs
+
+        app = self._app(
+            web_channel, memory, tasks_stub, priv_store,
+            subagents_provider=subagents_provider,
+        )
+        async with await self._client(app) as c:
+            resp = await c.get(
+                "/api/subagents", headers={"Authorization": f"Bearer {TOKEN}"}
+            )
+        assert resp.json() == runs
+
+    @pytest.mark.asyncio
+    async def test_status_requires_auth(self, app: Any) -> None:
+        async with await self._client(app) as c:
+            resp = await c.get("/api/status")
+        assert resp.status_code == 401

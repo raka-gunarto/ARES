@@ -5,7 +5,6 @@ no business logic lives in this module.
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import hmac
 import json
@@ -61,6 +60,8 @@ def build_app(
     health_provider: Callable[[], dict],
     static_dir: Path,
     trace_file: str | Path | None = None,
+    status_provider: Callable[[], Awaitable[dict]] | None = None,
+    subagents_provider: Callable[[], Awaitable[list[dict]]] | None = None,
 ) -> FastAPI:
     """Build the FastAPI dashboard app.
 
@@ -68,7 +69,8 @@ def build_app(
         token: Shared bearer token required on all /api/... routes.
         emit_chat: async callable(text) that emits a web_message event for
             user "primary".
-        web_channel: WebChannel with .outbox(user_id) -> asyncio.Queue.
+        web_channel: WebChannel with the cursor-replay buffer API
+            (messages_since / wait_for_messages / poll_started / poll_finished).
         memory: BaseMemory instance (list/read used here).
         tasks: TaskStore instance (list_open used here).
         priv_store: PrivStore instance, or None if privileges are disabled.
@@ -76,6 +78,12 @@ def build_app(
         health_provider: sync callable () -> dict of health/status info.
         static_dir: path to the dashboard static/ directory (index.html lives
             here).
+        trace_file: path to the activity trace JSONL, or None if tracing is off.
+        status_provider: async callable () -> dict describing where a reply
+            would land right now (web presence, last delivery channel, whether
+            someone is home). None if unavailable.
+        subagents_provider: async callable () -> list[dict] of recent background
+            runs (spec §20). None if subagents are disabled.
 
     Returns:
         A configured FastAPI app.
@@ -116,29 +124,65 @@ def build_app(
 
     @app.get("/api/chat/poll", dependencies=[api_auth])
     async def poll_chat(since: str | None = None) -> dict:
-        """Long-poll (<=25s) for new outbox messages for user "primary".
+        """Long-poll (<=25s) for messages after the browser's cursor.
 
-        `since` is accepted for future cursor-based use but ignored in v1 --
-        the outbox is a plain queue, drained in FIFO order.
+        `since` is the last sequence number the browser has seen (absent on a
+        fresh page load). Returns every buffered message after it plus the new
+        `cursor`. Because the reply lives in the channel's replay buffer rather
+        than a one-shot queue, a poll that never reaches a suspended tab loses
+        nothing: the tab re-polls from its cursor on wake and catches up. This
+        is the fix for the residual v1.14 race (a reply dropped into a frozen
+        mobile connection).
         """
+        cursor: int | None
+        if since is None or since == "":
+            cursor = None
+        else:
+            try:
+                cursor = int(since)
+            except ValueError:
+                cursor = None
+
         # This open poll is the web channel's liveness signal: while it is
         # connected the user counts as present, so speak() delivers here; once
         # the last poll closes (tab backgrounded/closed) speak() falls through
         # to speaker/push. Bracket the wait so the waiter count is accurate even
         # if the client disconnects (CancelledError still runs the finally).
         web_channel.poll_started("primary")
-        q: asyncio.Queue = web_channel.outbox("primary")
         try:
-            try:
-                msg = await asyncio.wait_for(q.get(), timeout=25)
-                msgs = [msg]
-            except asyncio.TimeoutError:
-                msgs = []
-            while not q.empty():
-                msgs.append(q.get_nowait())
-            return {"messages": msgs}
+            msgs, new_cursor = web_channel.messages_since("primary", cursor)
+            if msgs:
+                return {"messages": msgs, "cursor": new_cursor}
+            # Nothing new yet: wait for a delivery (or 25s), then re-read from
+            # the same cursor so a message that arrives during the wait is not
+            # missed. A fresh load (cursor is None) becomes the current cursor.
+            base = new_cursor if cursor is None else cursor
+            await web_channel.wait_for_messages("primary", timeout=25)
+            msgs, new_cursor = web_channel.messages_since("primary", base)
+            return {"messages": msgs, "cursor": new_cursor}
         finally:
             web_channel.poll_finished("primary")
+
+    @app.get("/api/status", dependencies=[api_auth])
+    async def get_status() -> JSONResponse:
+        """Where a reply would land right now: web presence, last channel, home.
+
+        Powers the dashboard's presence badge. Returns an empty-ish shape when
+        no provider is wired so the frontend can render "unknown" gracefully.
+        """
+        if status_provider is None:
+            return JSONResponse(
+                {"web_present": web_channel.is_present("primary"),
+                 "last_channel": None, "home": None}
+            )
+        return JSONResponse(await status_provider())
+
+    @app.get("/api/subagents", dependencies=[api_auth])
+    async def get_subagents() -> JSONResponse:
+        """List recent background runs (spec §20). Empty when disabled."""
+        if subagents_provider is None:
+            return JSONResponse([])
+        return JSONResponse(await subagents_provider())
 
     @app.get("/api/memory/list", dependencies=[api_auth])
     async def memory_list() -> PlainTextResponse:

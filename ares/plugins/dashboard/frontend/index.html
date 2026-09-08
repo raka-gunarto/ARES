@@ -206,6 +206,7 @@ a.ext{color:var(--teal);text-decoration:none;border-bottom:1px dotted rgba(0,255
 <script>
 const { html, render, useState, useEffect, useRef } = window.htmPreact;
 const TOKEN_KEY = "ares_token";
+const CURSOR_KEY = "ares_chat_cursor";
 
 /* ---------------- markdown ---------------- */
 function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
@@ -260,8 +261,10 @@ function makeApi(token, onUnauth){
   }
   return {
     health:()=>req("/api/health").then(r=>r.json()),
+    status:()=>req("/api/status").then(r=>r.json()),
+    subagents:()=>req("/api/subagents").then(r=>r.json()),
     sendChat:(text)=>req("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})}),
-    pollChat:()=>req("/api/chat/poll").then(r=>r.json()),
+    pollChat:(since)=>req("/api/chat/poll"+(since!=null?("?since="+encodeURIComponent(since)):"")).then(r=>r.json()),
     memList:()=>req("/api/memory/list").then(r=>r.text()),
     memFile:(p)=>req("/api/memory/file?path="+encodeURIComponent(p)).then(r=>r.text()),
     tasks:()=>req("/api/tasks?status=open").then(r=>r.json()),
@@ -398,6 +401,40 @@ function PRs({api,toast}){
   </div>`;
 }
 
+/* ---------------- subagents ---------------- */
+function subLabel(s){ return (s||"").toLowerCase(); }
+function subWhen(iso){
+  if(!iso) return "—";
+  return String(iso).replace("T"," ").replace(/\..*/,"").slice(0,19);
+}
+function Subagents({api,toast}){
+  const [rows,setRows]=useState(null);
+  const load=async()=>{ try{ setRows(await api.subagents()); }catch(e){ toast("Failed to load subagents","err"); } };
+  useEffect(()=>{
+    let alive=true;
+    const tick=async()=>{ try{ const r=await api.subagents(); if(alive) setRows(r); }catch(e){} };
+    tick(); const id=setInterval(tick,5000);
+    return ()=>{ alive=false; clearInterval(id); };
+  },[]);
+  const active=(rows||[]).filter(r=>subLabel(r.status)==="running").length;
+  return html`<div class="panel">
+    <div class="panel-hd">Background runs${active>0?html` · <span style="color:var(--amber)">${active} active</span>`:null}
+      <div class="section-actions"><button class="btn sm ghost" onClick=${load}>↻ Refresh</button></div></div>
+    ${rows===null?html`<div class="empty">Loading…</div>`:
+     rows.length===0?html`<div class="empty">No background runs. ARES spawns these for long, autonomous work (spec §20).</div>`:
+     html`<div class="tbl-wrap"><table>
+       <thead><tr><th>Run</th><th>Status</th><th>Started</th><th>Iters</th><th>Latest</th></tr></thead>
+       <tbody>${rows.map(r=>html`<tr key=${r.run_id}>
+         <td>${r.title||r.run_id}</td>
+         <td><span class=${"state "+(subLabel(r.status)==="running"?"open":subLabel(r.status)==="done"?"":"pending")}>${r.status||""}</span></td>
+         <td>${subWhen(r.started_at)}</td>
+         <td>${r.iterations!=null?r.iterations:"—"}</td>
+         <td>${r.result?html`<span class="md" title=${r.result}>${String(r.result).slice(0,160)}${String(r.result).length>160?"…":""}</span>`
+              :r.last_progress?html`<span style="color:var(--muted)">${r.last_progress}</span>`:"—"}</td>
+       </tr>`)}</tbody></table></div>`}
+  </div>`;
+}
+
 /* ---------------- trace ---------------- */
 function traceLabel(r){
   const k=r.kind;
@@ -463,7 +500,7 @@ function Trace({api,toast}){
 }
 
 /* ---------------- app ---------------- */
-const TABS=[["chat","Chat"],["trace","Trace"],["memory","Memory"],["tasks","Tasks"],["approvals","Approvals"],["prs","PRs"]];
+const TABS=[["chat","Chat"],["trace","Trace"],["memory","Memory"],["tasks","Tasks"],["subagents","Subagents"],["approvals","Approvals"],["prs","PRs"]];
 
 function App(){
   const [token,setTok]=useState(()=>localStorage.getItem(TOKEN_KEY)||"");
@@ -474,6 +511,7 @@ function App(){
   const [toast,setToast]=useState(null);
   const [pendingCount,setPending]=useState(0);
   const [version,setVersion]=useState(null);
+  const [status,setStatus]=useState(null); // {web_present,last_channel,home}
   const apiRef=useRef(null);
 
   // Deployed commit SHA (no auth; shows on the lock screen too).
@@ -485,7 +523,7 @@ function App(){
   apiRef.current=api;
 
   const saveToken=()=>{ const t=draft.trim(); if(!t){showToast("Enter a token","err");return;} localStorage.setItem(TOKEN_KEY,t); setTok(t); setDraft(""); showToast("Token saved","ok"); };
-  const clearToken=()=>{ localStorage.removeItem(TOKEN_KEY); setTok(""); setHealth(null); setMessages([]); };
+  const clearToken=()=>{ localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(CURSOR_KEY); setTok(""); setHealth(null); setMessages([]); };
 
   // health poll
   useEffect(()=>{
@@ -496,15 +534,33 @@ function App(){
     return ()=>{ alive=false; clearInterval(id); };
   },[token]);
 
-  // chat long-poll (runs whenever authed, regardless of active tab)
+  // presence/routing poll: where a reply would land right now.
+  useEffect(()=>{
+    if(!token){ setStatus(null); return; }
+    let alive=true;
+    const tick=async()=>{ try{ const s=await apiRef.current.status(); if(alive) setStatus(s); }catch(e){ /* transient */ } };
+    tick(); const id=setInterval(tick,10000);
+    return ()=>{ alive=false; clearInterval(id); };
+  },[token]);
+
+  // chat long-poll (runs whenever authed, regardless of active tab).
+  // Cursor-based: the server buffers replies with sequence numbers and we poll
+  // from the last one we saw, persisted in this browser. A reply that lands
+  // while the tab is frozen (mobile, out of the house) is no longer lost — on
+  // reconnect we replay from the stored cursor and catch up.
   useEffect(()=>{
     if(!token) return;
     let alive=true;
+    let cursor=localStorage.getItem(CURSOR_KEY); // null on a fresh browser
     (async()=>{
       while(alive){
         try{
-          const data=await apiRef.current.pollChat();
+          const data=await apiRef.current.pollChat(cursor);
           if(!alive) break;
+          if(data.cursor!=null){
+            cursor=String(data.cursor);
+            try{ localStorage.setItem(CURSOR_KEY,cursor); }catch(e){}
+          }
           if(data.messages && data.messages.length){
             setMessages(m=>[...m,...data.messages.map(x=>({role:"ares",text:(x&&x.text)||x}))]);
           }
@@ -540,6 +596,7 @@ function App(){
     : tab==="trace"?html`<${Trace} api=${api} toast=${showToast}/>`
     : tab==="memory"?html`<${Memory} api=${api} toast=${showToast}/>`
     : tab==="tasks"?html`<${Tasks} api=${api} toast=${showToast}/>`
+    : tab==="subagents"?html`<${Subagents} api=${api} toast=${showToast}/>`
     : tab==="approvals"?html`<${Approvals} api=${api} toast=${showToast} onCount=${setPending}/>`
     : html`<${PRs} api=${api} toast=${showToast}/>`;
 
@@ -549,7 +606,9 @@ function App(){
       <div class="rule"></div>
       <div class="tokenbar">
         <label>TOKEN</label>
-        <span class="pill ok" style="flex:1;justify-content:flex-start"><span class="dot"></span>stored in this browser</span>
+        <span class="pill ok"><span class="dot"></span>stored in this browser</span>
+        <span style="flex:1"></span>
+        ${PresenceBadge(status)}
         <button class="btn sm ghost" onClick=${clearToken}>Sign out</button>
       </div>
       <div class="tabs">
@@ -561,6 +620,23 @@ function App(){
       ${panel}
       ${toast && html`<div class=${"toast "+toast.kind}>${toast.msg}</div>`}
     </div>`;
+}
+
+// Where a reply would land right now, and where the last one went.
+function PresenceBadge(status){
+  if(!status) return null;
+  const home=status.home; // true / false / null(unknown)
+  let where,cls;
+  if(status.web_present){ where="reaches you on web"; cls="pill ok"; }
+  else if(home===true){ where="→ speaker (you're home)"; cls="pill"; }
+  else if(home===false){ where="→ push (you're away)"; cls="pill"; }
+  else { where="→ push"; cls="pill"; }
+  const last=status.last_channel;
+  const lastLbl={web:"web",speaker:"speaker",push:"push",console:"console",
+    sip_message:"SMS",sip_call:"call",voice:"voice"}[last]||last;
+  return html`
+    <span class=${cls} title="Where ARES would deliver a reply to you right now"><span class="dot"></span>${where}</span>
+    ${last?html`<span class="pill" title="The channel that received the most recent reply"><span class="dot"></span>last: ${lastLbl}</span>`:null}`;
 }
 
 function Header(health,pending,version){

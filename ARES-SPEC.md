@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.14
+# ARES — Implementation Specification v1.15
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -168,6 +168,24 @@ runs even on client disconnect). Backend-only; no new tool or dependency. A
 residual mobile race remains — a reply delivered into a still-open but suspended
 connection can be dropped — which needs cursor-based replay (the `since`
 parameter, still stubbed) to fully close; tracked as future work.
+
+v1.15 closes that residual race and refreshes the dashboard (§4.5, §17). The
+`WEB` channel is now a **replayable buffer**: every delivered reply is appended
+with a monotonic sequence number (bounded ring buffer), and `deliver` returns
+whether a browser is present *now* (unchanged router semantics) while always
+recording the reply. `/api/chat/poll` becomes cursor-based — the browser polls
+from the last sequence it saw (the `since` parameter, now live and persisted in
+`localStorage`) and the endpoint returns everything after it plus the new
+cursor. A reply committed to a poll that never reaches a frozen tab is therefore
+no longer lost: on reconnect the tab re-polls from its cursor and catches up (a
+`since` ahead of the server's counter, e.g. after a restart, triggers a full
+resync). Two dashboard additions surface current capabilities: `/api/status`
+reports where a reply would land right now (web presence, the router's
+`last_channel`, and whether anyone is home) as a header badge, and
+`/api/subagents` lists recent background runs (§20) — open plus recently closed,
+via `SubagentManager.list_all_runs` — as a new **Subagents** tab. Backend adds
+no dependency; the speaker channel's `anyone_home` is made public to feed the
+status badge; the frontend is rebuilt from source.
 
 ---
 
@@ -549,7 +567,14 @@ connected (or one closed within a short grace bridging consecutive polls), so a
 reply written to a backgrounded or closed dashboard session — which can look
 recently-active for many seconds on mobile yet receive nothing — falls through
 the fallback chain instead of being committed to an outbox no live connection
-drains. `SPEAKER` (delivered by an optional plugin
+drains. The `WEB` channel additionally **buffers** every delivered reply in a
+bounded per-user ring buffer keyed by a monotonic sequence number (it returns
+presence to the router but records the reply regardless), and `/api/chat/poll`
+serves it cursor-based: the browser polls from the last sequence it saw
+(persisted client-side) and receives everything after it plus the new cursor. A
+reply committed to a poll that never reaches a frozen tab is thus recoverable —
+the tab replays from its cursor on reconnect — closing the residual race left by
+the presence gate alone. `SPEAKER` (delivered by an optional plugin
 on `media_player` TTS via Home Assistant) sits ahead of `PUSH`: it announces the
 message aloud when a configured presence entity reads `home`, and returns
 `False` when no one is home so delivery continues to `PUSH` (the user's phone).
@@ -1689,11 +1714,14 @@ no websockets.
 ### 17.1 `DashboardSource` + `WebChannel`
 
 - `DashboardSource` (name `dashboard`) validates config and runs uvicorn in the
-  same event loop (`uvicorn.Server.serve()` as a task). It owns a `WebChannel`
-  and per-user outbox `asyncio.Queue`s.
-- `WebChannel(type=WEB)`: `deliver` pushes the message onto the user's outbox
-  queue. The browser long-polls `/api/chat/poll` to drain it. This is how the
-  agent's `speak` reaches the dashboard when the active channel is WEB.
+  same event loop (`uvicorn.Server.serve()` as a task). It owns a `WebChannel`.
+- `WebChannel(type=WEB)`: `deliver` appends the message to a bounded per-user
+  ring buffer under a monotonic sequence number and returns whether a browser is
+  present now (so the router's fallback is unchanged), always recording the
+  reply. The browser cursor-polls `/api/chat/poll?since=<seq>` and receives
+  everything after its cursor plus the new cursor, so a reply that misses a
+  frozen tab is replayed on reconnect. This is how the agent's `speak` reaches
+  the dashboard when the active channel is WEB.
 - Chat in: `POST /api/chat` → emits `type="web_message"`, NORMAL,
   `payload={"text"}`; the session channel flips to WEB (§4.6), so the reply
   routes back to the browser.
@@ -1703,10 +1731,12 @@ no websockets.
 ```
 GET  /                       -> static/index.html
 POST /api/chat               {text}          -> 202, emits web_message
-GET  /api/chat/poll          ?since=         -> long-poll (≤25 s) new outbox msgs
+GET  /api/chat/poll          ?since=<seq>     -> long-poll (≤25 s); {messages, cursor}
 GET  /api/memory/list                        -> memory.list()
 GET  /api/memory/file        ?path=          -> memory.read() (path-safe; RO)
 GET  /api/tasks              ?status=open     -> task list
+GET  /api/status                             -> {web_present, last_channel, home}
+GET  /api/subagents                          -> recent background runs (§20)
 GET  /api/privileges         ?status=pending  -> priv request list
 POST /api/privileges/{id}/approve            -> PrivStore.approve  (operator gate)
 POST /api/privileges/{id}/deny               -> PrivStore.deny
@@ -1721,11 +1751,14 @@ construction; no business logic in the API layer.
 
 ### 17.3 `static/index.html`
 
-One self-contained file: vanilla JS, no build step, no external CDN. Tabs: Chat
-(with long-poll), Memory (list + file view), Tasks, Approvals (pending priv
-requests with Approve/Deny buttons + reason/command shown), PRs (open self-edit
-PRs, links to GitHub). Token entered once, kept in a JS variable (not
-localStorage, per artifact storage rules don't apply here but keep it simple).
+One self-contained file (a Preact app inlined from source via a build step; no
+external CDN). Tabs: Chat (cursor-based long-poll, cursor persisted in
+`localStorage`), Trace, Memory (list + file view), Tasks, Subagents (recent
+background runs, §20), Approvals (pending priv requests with Approve/Deny buttons
++ reason/command shown), PRs (open self-edit PRs, links to GitHub). A header
+badge shows where a reply would land right now (web presence / speaker / push)
+and the channel that received the last one, from `/api/status`. Token entered
+once, kept in `localStorage`.
 
 ---
 

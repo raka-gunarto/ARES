@@ -76,7 +76,7 @@ class SpeakerChannel(BaseChannel):
         self.tts_field = tts_field
         self.language = language
 
-    async def _anyone_home(self) -> bool:
+    async def anyone_home(self) -> bool:
         """True if any configured presence entity currently reads "home"."""
         for eid in self.presence_entities:
             try:
@@ -102,7 +102,7 @@ class SpeakerChannel(BaseChannel):
         if not self.service_entity or not self.presence_entities:
             return False
         try:
-            if not await self._anyone_home():
+            if not await self.anyone_home():
                 return False
             data: dict[str, typing.Any] = {**self.service_data, self.tts_field: message}
             if self.language:

@@ -1,12 +1,42 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.14. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.15. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13 + v1.14. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13 + v1.14 + v1.15. ***
+
+v1.15 (operator-authorised) — cursor-based chat replay + dashboard refresh.
+Reported: "add all of those frontend updates you suggested" (after the v1.14
+web-presence fix), i.e. the three updates proposed while diagnosing the lost
+08:31 reply: (1) cursor chat replay, (2) presence/channel badge, (3) subagents
+panel.
+ - (1) Replay: `WebChannel` is now a bounded ring buffer (MAX_BUFFER=100) keyed
+   by a monotonic seq; `deliver` ALWAYS buffers + wakes a wait-event and returns
+   `is_present` (router fallback unchanged). `/api/chat/poll` is cursor-based:
+   `since=<seq>` → `{messages, cursor}`; a `since` ahead of the server (restart
+   reset the counter) triggers a full resync. Frontend persists the cursor in
+   `localStorage` (CURSOR_KEY) and polls from it, so a reply that missed a frozen
+   tab replays on reconnect — closes the v1.14 residual race. Old outbox Queue
+   removed; health reports `web_buffer` depth via `pending_count`.
+ - (2) Badge: new `GET /api/status` → `{web_present, last_channel, home}`.
+   `ResponseRouter.last_channel[user_id]` records where each spoken reply landed;
+   `home` comes from the speaker channel's now-public `anyone_home` (wired as
+   `home_provider`). Header pill shows where a reply reaches you now + last channel.
+ - (3) Subagents tab: new `GET /api/subagents` → `SubagentManager.list_all_runs`
+   (open via list_open + recent closed via tasks.history, newest first). Frontend
+   Subagents tab auto-refreshes every 5s.
+ - Wiring: DashboardSource gained router/subagent_manager/home_provider params +
+   `_status_provider`/`_subagents_provider`; main.py captures `speaker_channel`
+   and passes them. build_app gained status_provider/subagents_provider.
+ - Frontend rebuilt: edit `frontend/index.html` then
+   `python ares/plugins/dashboard/frontend/build.py` → `static/index.html` (both
+   committed). Backend-only deploy path (no config/VM-stop) still applies.
+ - Suite 453 passed. New tests: cursor replay/resync/bounded buffer + fresh-load
+   (test_speaker_channel.py, test_dashboard.py), /api/status + /api/subagents
+   (test_dashboard.py TestStatusAndSubagents), list_all_runs (test_subagents.py).
 
 v1.14 (operator-authorised) — fix web presence so out-of-house web replies reach
 the phone. Reported: "my last request didn't get a response on the web dashboard,

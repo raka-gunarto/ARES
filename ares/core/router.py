@@ -20,6 +20,10 @@ class ResponseRouter:
         """
         self.sessions = sessions
         self._channels: dict[ChannelType, BaseChannel] = {}
+        # The channel that last successfully delivered a spoken reply to each
+        # user, surfaced by the dashboard so the operator can see where a reply
+        # actually went (web / speaker / push / console).
+        self.last_channel: dict[str, str] = {}
 
     def register(self, channel: BaseChannel) -> None:
         """
@@ -59,6 +63,7 @@ class ResponseRouter:
             try:
                 ok = await channel.deliver(user_id, message, session)
                 if ok:
+                    self.last_channel[user_id] = primary_channel_type.value
                     return
             except Exception as e:
                 log.exception(
@@ -83,6 +88,7 @@ class ResponseRouter:
                 try:
                     ok = await channel.deliver(user_id, message, session)
                     if ok:
+                        self.last_channel[user_id] = fallback_type.value
                         return
                 except Exception as e:
                     log.exception(

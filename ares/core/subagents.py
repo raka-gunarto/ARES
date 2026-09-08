@@ -197,6 +197,43 @@ class SubagentManager:
             )
         return out
 
+    @staticmethod
+    def _summary(task: Task) -> dict | None:
+        """One run summary from a task row, or None if it carries no block."""
+        block = task.data.get("subagent")
+        if not isinstance(block, dict):
+            return None
+        return {
+            "run_id": task.id,
+            "title": task.title,
+            "status": block.get("status", "unknown"),
+            "started_at": block.get("started_at"),
+            "ended_at": block.get("ended_at"),
+            "iterations": block.get("iterations", 0),
+            "last_progress": (block.get("progress") or [None])[-1],
+            "result": block.get("result"),
+        }
+
+    async def list_all_runs(self, user_id: str = "primary", limit: int = 20) -> list[dict]:
+        """Open runs plus recently closed ones, newest first (for the dashboard).
+
+        `list_runs` shows only what is still open; the dashboard also wants the
+        recent finished runs so the operator can read a result after it lands.
+        """
+        open_rows = await self.tasks.list_open(user_id)
+        closed_rows = await self.tasks.history(user_id, limit=limit)
+        runs: list[dict] = []
+        for task in open_rows + closed_rows:
+            summary = self._summary(task)
+            if summary is not None:
+                runs.append(summary)
+
+        def _key(r: dict) -> str:
+            return r.get("ended_at") or r.get("started_at") or ""
+
+        runs.sort(key=_key, reverse=True)
+        return runs[:limit]
+
     async def update_block(self, run_id: str, **fields) -> None:
         """Merge fields into a run's `subagent` block."""
         task = await self.tasks.update(run_id)
