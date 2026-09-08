@@ -388,3 +388,45 @@ class TestTraceEndpoint:
             data = resp.json()
             assert data["available"] is False
             assert data["records"] == []
+
+
+class TestPollPresence:
+    """The poll endpoint must bracket the wait with poll_started/poll_finished
+    so web-channel presence reflects a live connection (v1.13 fix)."""
+
+    @pytest.mark.asyncio
+    async def test_poll_returns_queued_message_and_clears_waiter(
+        self, client: httpx.AsyncClient, web_channel: WebChannel
+    ) -> None:
+        # Pre-load the outbox so the long-poll returns immediately (no 25s wait).
+        web_channel.outbox("primary").put_nowait("hello")
+        resp = await client.get(
+            "/api/chat/poll", headers={"Authorization": f"Bearer {TOKEN}"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["messages"] == ["hello"]
+        # finally-block ran: no lingering waiter, and the close was timestamped.
+        assert web_channel._waiters.get("primary", 0) == 0
+        assert "primary" in web_channel._last_poll
+
+    @pytest.mark.asyncio
+    async def test_present_while_poll_in_flight_absent_after(
+        self, client: httpx.AsyncClient, web_channel: WebChannel
+    ) -> None:
+        import time
+
+        # Start a poll that will block (empty outbox) and confirm presence flips.
+        task = asyncio.ensure_future(
+            client.get(
+                "/api/chat/poll", headers={"Authorization": f"Bearer {TOKEN}"}
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert web_channel.is_present("primary") is True  # a poll is connected
+        # Deliver while connected: goes onto the queue, poll returns it.
+        assert await web_channel.deliver("primary", "hi", None) is True  # type: ignore[arg-type]
+        resp = await task
+        assert "hi" in resp.json()["messages"]
+        # After it closes and the grace elapses, the session reads as absent.
+        web_channel._last_poll["primary"] = time.monotonic() - 999
+        assert web_channel.is_present("primary") is False

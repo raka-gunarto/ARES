@@ -14,12 +14,15 @@ if typing.TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# A present browser re-issues the <=25s long-poll immediately, so it marks
-# itself at least every ~25s. If the last poll is older than this, treat the
-# web session as abandoned: deliver() declines so the router can reach the
-# user where they actually are (speaker / push) instead of piling messages
-# into an outbox no one is draining.
-PRESENCE_WINDOW_S = 60.0
+# Presence for the web channel means "a long-poll is actually connected right
+# now," not "polled recently." A backgrounded/closed browser (common on mobile,
+# where the tab is frozen while you're out) can look recently-active for many
+# seconds yet be unable to receive anything — so a 'recent poll' window let the
+# router commit a reply to an outbox no live connection would drain, and the
+# message was lost instead of falling through to push. So presence is primarily
+# the count of in-flight polls; a short grace bridges the sub-second gap between
+# one long-poll returning and the browser re-issuing the next.
+PRESENCE_GRACE_S = 10.0
 
 
 class WebChannel(BaseChannel):
@@ -35,21 +38,33 @@ class WebChannel(BaseChannel):
     def __init__(self) -> None:
         """Initialize the web channel with empty outbox queues."""
         self._outboxes: dict[str, asyncio.Queue] = {}
+        self._waiters: dict[str, int] = {}
         self._last_poll: dict[str, float] = {}
 
-    def mark_poll(self, user_id: str) -> None:
-        """Record that the browser just issued a long-poll for this user.
+    def poll_started(self, user_id: str) -> None:
+        """Record that a long-poll connection just opened for this user."""
+        self._waiters[user_id] = self._waiters.get(user_id, 0) + 1
 
-        Called by the dashboard's poll endpoint on every request. It is the
-        only presence signal we have for the web channel: an open dashboard
-        polls continuously, a closed one stops.
+    def poll_finished(self, user_id: str) -> None:
+        """Record that a long-poll connection just closed for this user.
+
+        The close time starts the grace window that covers the brief gap until
+        the browser re-issues its next poll.
         """
+        self._waiters[user_id] = max(0, self._waiters.get(user_id, 0) - 1)
         self._last_poll[user_id] = time.monotonic()
 
     def is_present(self, user_id: str) -> bool:
-        """True if the browser has long-polled within PRESENCE_WINDOW_S."""
+        """True if a long-poll is connected now, or one closed within the grace.
+
+        Waiter count is the real signal: a live poll receives a delivered
+        message immediately. The grace only bridges the sub-second gap between
+        consecutive polls of a continuously-polling browser.
+        """
+        if self._waiters.get(user_id, 0) > 0:
+            return True
         last = self._last_poll.get(user_id)
-        return last is not None and (time.monotonic() - last) <= PRESENCE_WINDOW_S
+        return last is not None and (time.monotonic() - last) <= PRESENCE_GRACE_S
 
     def outbox(self, user_id: str) -> asyncio.Queue:
         """Get or create the outbox queue for a user.

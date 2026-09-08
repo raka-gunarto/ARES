@@ -14,7 +14,7 @@ from ares.core.channel import BaseChannel, ChannelType
 from ares.core.router import ResponseRouter
 from ares.core.session import Session, SessionManager
 from ares.plugins.channels.speaker import SpeakerChannel
-from ares.plugins.dashboard.channel import PRESENCE_WINDOW_S, WebChannel
+from ares.plugins.dashboard.channel import PRESENCE_GRACE_S, WebChannel
 
 
 class FakeHA:
@@ -169,20 +169,40 @@ async def test_web_declines_without_a_poll():
 
 
 @pytest.mark.asyncio
-async def test_web_delivers_after_recent_poll():
+async def test_web_delivers_while_a_poll_is_connected():
     web = WebChannel()
-    web.mark_poll("primary")
+    web.poll_started("primary")  # a long-poll is in flight
     assert await web.deliver("primary", "hi", _session()) is True
     assert web.outbox("primary").get_nowait() == "hi"
 
 
 @pytest.mark.asyncio
-async def test_web_declines_after_poll_goes_stale():
+async def test_web_delivers_within_grace_between_polls():
     web = WebChannel()
-    web.mark_poll("primary")
-    # Age the last poll past the presence window.
-    web._last_poll["primary"] = time.monotonic() - (PRESENCE_WINDOW_S + 1)
+    web.poll_started("primary")
+    web.poll_finished("primary")  # poll just closed; grace window is open
+    assert await web.deliver("primary", "hi", _session()) is True
+
+
+@pytest.mark.asyncio
+async def test_web_declines_after_last_poll_closed_and_grace_elapsed():
+    # The 08:31 out-of-house case: the tab is gone, no poll is connected.
+    web = WebChannel()
+    web.poll_started("primary")
+    web.poll_finished("primary")
+    web._last_poll["primary"] = time.monotonic() - (PRESENCE_GRACE_S + 1)
+    assert web._waiters.get("primary", 0) == 0
     assert await web.deliver("primary", "hi", _session()) is False
+    assert web.outbox("primary").empty()  # not queued -> router falls to push
+
+
+@pytest.mark.asyncio
+async def test_web_present_while_any_poll_in_flight_even_if_one_closed():
+    web = WebChannel()
+    web.poll_started("primary")
+    web.poll_started("primary")
+    web.poll_finished("primary")  # one closed, one still connected
+    assert await web.deliver("primary", "hi", _session()) is True
 
 
 # --- Router fallback ordering ---------------------------------------------

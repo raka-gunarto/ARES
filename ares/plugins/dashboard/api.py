@@ -121,19 +121,24 @@ def build_app(
         `since` is accepted for future cursor-based use but ignored in v1 --
         the outbox is a plain queue, drained in FIFO order.
         """
-        # This poll is the web channel's only liveness signal: mark it so
-        # speak() delivers here while the dashboard is open, and falls through
-        # to speaker/push once it closes.
-        web_channel.mark_poll("primary")
+        # This open poll is the web channel's liveness signal: while it is
+        # connected the user counts as present, so speak() delivers here; once
+        # the last poll closes (tab backgrounded/closed) speak() falls through
+        # to speaker/push. Bracket the wait so the waiter count is accurate even
+        # if the client disconnects (CancelledError still runs the finally).
+        web_channel.poll_started("primary")
         q: asyncio.Queue = web_channel.outbox("primary")
         try:
-            msg = await asyncio.wait_for(q.get(), timeout=25)
-            msgs = [msg]
-        except asyncio.TimeoutError:
-            msgs = []
-        while not q.empty():
-            msgs.append(q.get_nowait())
-        return {"messages": msgs}
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=25)
+                msgs = [msg]
+            except asyncio.TimeoutError:
+                msgs = []
+            while not q.empty():
+                msgs.append(q.get_nowait())
+            return {"messages": msgs}
+        finally:
+            web_channel.poll_finished("primary")
 
     @app.get("/api/memory/list", dependencies=[api_auth])
     async def memory_list() -> PlainTextResponse:

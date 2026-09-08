@@ -1,12 +1,32 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.13. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.14. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13 + v1.14. ***
+
+v1.14 (operator-authorised) — fix web presence so out-of-house web replies reach
+the phone. Reported: "my last request didn't get a response on the web dashboard,
+I was out of the house." Trace diagnosis (2026-09-08): the 08:31 web message
+("get me the flightradar link") was answered correctly in 18s but never
+delivered — v1.13's 60s presence window judged the (backgrounded, mobile) tab
+"present", so router.speak committed to the web outbox and did NOT fall to push;
+no live poll drained it (outbox depth 0, no ntfy at 08:31) → answer lost.
+ - Fix: presence = count of in-flight long-polls (WebChannel.poll_started/
+   poll_finished), plus a 10s grace bridging consecutive polls, replacing the
+   60s "polled recently" window. Poll endpoint brackets the wait in try/finally
+   so the waiter count is right even on client disconnect (CancelledError).
+   Backgrounded/closed tab → absent → speak() falls through to speaker/push.
+ - Backend-only, deploys via updater (no config/VM-stop). Suite 442 passed.
+   tests/test_speaker_channel.py (waiter presence) + tests/test_dashboard.py
+   (TestPollPresence: endpoint brackets, present-during-flight/absent-after).
+ - KNOWN RESIDUAL: a reply delivered into a still-open-but-suspended mobile
+   connection can still be dropped (the q.get() consumes it, the HTTP response
+   never lands). Full fix = cursor replay via the stubbed `since` param + a
+   client cursor (frontend). Not done; see the frontend note below.
 
 v1.13 (operator-authorised) — presence-aware delivery; stop "speaking to no one."
 Reported by the operator ("I'm not always on the web channel ... sometimes it

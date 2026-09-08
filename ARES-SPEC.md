@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.13
+# ARES — Implementation Specification v1.14
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -140,8 +140,10 @@ v1.13 makes delivery presence-aware (§4.5). The `WEB` channel used to accept
 every `speak` into an in-memory outbox and return `True` even when no browser
 was polling, so a reply spoken while the user was away from the dashboard was
 lost to a queue no one drained — "speaking to no one." `WebChannel.deliver` now
-returns `False` unless the dashboard has long-polled within a short presence
-window, letting the router fall through. A new optional `SPEAKER` channel sits
+returns `False` unless a long-poll is actually connected (presence is the count
+of in-flight polls, plus a short grace between consecutive polls — a "polled
+recently" window proved too loose on mobile, where a backgrounded tab looked
+present but received nothing), letting the router fall through. A new optional `SPEAKER` channel sits
 ahead of `PUSH` in the `speak` fallback: when a configured presence entity
 (`person.*`) reads `home`, it announces the message aloud on a Home Assistant
 speaker via TTS (a generic `tts` service call configured to fit either the
@@ -150,6 +152,22 @@ declines and delivery continues to `PUSH` (the phone). The speaker plugin
 receives the HA service by injection
 (no plugin-to-plugin import) and is wired only when Home Assistant is enabled
 and a `speaker` config block is present. No new tool, no new dependency.
+
+v1.14 corrects the v1.13 web-presence signal (§4.5). v1.13 judged the dashboard
+"present" if it had long-polled within 60s; a live trace caught the failure that
+exposes — a user out of the house asked a question on the web dashboard, got a
+correct answer in 18s, and never received it. Their mobile tab was backgrounded:
+still inside the 60s window (so the router committed the reply to the web outbox
+and did **not** fall through to push) but with no live connection to drain it, so
+the answer was consumed by a dead poll and lost, reaching neither web nor phone.
+Presence is now the count of **in-flight** long-polls (plus a short grace that
+bridges the gap between consecutive polls), so a backgrounded or closed session
+is correctly treated as absent and the reply falls through to speaker/push. The
+poll endpoint brackets its wait with `poll_started`/`poll_finished` (the close
+runs even on client disconnect). Backend-only; no new tool or dependency. A
+residual mobile race remains — a reply delivered into a still-open but suspended
+connection can be dropped — which needs cursor-based replay (the `since`
+parameter, still stubbed) to fully close; tracked as future work.
 
 ---
 
@@ -526,10 +544,12 @@ channel, falling back to `CONSOLE`. Room resolution for voice happens **inside**
 the voice channel at delivery time using `session.current_room`.
 
 A `deliver` returning `False` means "no one received this," not only "an error
-occurred": the `WEB` channel returns `False` when the browser has not
-long-polled within a short presence window (default 60s), so a reply written to
-an abandoned dashboard session falls through the fallback chain instead of
-piling into an outbox no one drains. `SPEAKER` (delivered by an optional plugin
+occurred": the `WEB` channel returns `False` unless a long-poll is actually
+connected (or one closed within a short grace bridging consecutive polls), so a
+reply written to a backgrounded or closed dashboard session — which can look
+recently-active for many seconds on mobile yet receive nothing — falls through
+the fallback chain instead of being committed to an outbox no live connection
+drains. `SPEAKER` (delivered by an optional plugin
 on `media_player` TTS via Home Assistant) sits ahead of `PUSH`: it announces the
 message aloud when a configured presence entity reads `home`, and returns
 `False` when no one is home so delivery continues to `PUSH` (the user's phone).
