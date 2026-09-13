@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 import httpx
-import logging
-import typing
-from datetime import datetime, timedelta
 
 from ares.core.tool import BaseTool, ToolContext, ToolResult
-
-if typing.TYPE_CHECKING:
-    pass
+from ares.core.utils.logging import get_logger
 
 try:
     import caldav
@@ -16,7 +14,7 @@ try:
 except ImportError:
     _HAVE_CALDAV = False
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Open-Meteo base URL as a module constant for testability
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
@@ -206,6 +204,22 @@ class GetCalendar(BaseTool):
             return ToolResult(False, f"Calendar error: {e}")
 
 
+def ical_utc(value: str) -> str:
+    """ISO8601 -> iCalendar UTC form. A time without an offset is local time."""
+    moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.astimezone()  # interpret as the daemon's local zone
+    return moment.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def ical_text(value: str) -> str:
+    """Escape a TEXT value (RFC 5545 §3.3.11) so it can't add properties."""
+    return (
+        str(value).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+        .replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
+    )
+
+
 class AddCalendarEvent(BaseTool):
     """Create a new calendar event on a CalDAV server."""
 
@@ -256,40 +270,40 @@ class AddCalendarEvent(BaseTool):
             return ToolResult(False, "title and start are required.")
 
         try:
-            client = caldav.DAVClient(
-                url=self.url,
-                username=self.username,
-                password=self.password
-            )
-            principal = client.principal()
-            calendars = principal.calendars()
+            dtstart = ical_utc(start)
+            dtend = ical_utc(end) if end else None
+        except ValueError:
+            return ToolResult(False, "start and end must be ISO8601 date-times, e.g. 2026-07-15T14:00:00")
 
+        lines = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//ARES//Calendar Event//EN",
+            "BEGIN:VEVENT",
+            f"UID:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}@ares",
+            f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+            f"DTSTART:{dtstart}",
+        ]
+        if dtend:
+            lines.append(f"DTEND:{dtend}")
+        lines.append(f"SUMMARY:{ical_text(title)}")
+        if description:
+            lines.append(f"DESCRIPTION:{ical_text(description)}")
+        lines += ["END:VEVENT", "END:VCALENDAR"]
+        ical_str = "\r\n".join(lines)
+
+        def _add() -> str | None:
+            client = caldav.DAVClient(url=self.url, username=self.username, password=self.password)
+            calendars = client.principal().calendars()
             if not calendars:
-                return ToolResult(False, "No calendars found.")
+                return "No calendars found."
+            calendars[0].add_event(ical_str)  # the first calendar
+            return None
 
-            # Use the first calendar
-            cal = calendars[0]
-
-            # Build iCalendar VEVENT
-            ical_str = f"""BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//ARES//Calendar Event//EN
-BEGIN:VEVENT
-UID:{datetime.now().isoformat()}@ares
-DTSTART:{start.replace('-', '').replace(':', '').replace('.', '')}Z
-"""
-            if end:
-                ical_str += f"DTEND:{end.replace('-', '').replace(':', '').replace('.', '')}Z\n"
-
-            ical_str += f"""SUMMARY:{title}
-"""
-            if description:
-                ical_str += f"DESCRIPTION:{description}\n"
-
-            ical_str += """END:VEVENT
-END:VCALENDAR"""
-
-            cal.add_event(ical_str)
+        try:
+            problem = await asyncio.to_thread(_add)
+            if problem:
+                return ToolResult(False, problem)
             return ToolResult(True, "Event added.")
 
         except Exception as e:

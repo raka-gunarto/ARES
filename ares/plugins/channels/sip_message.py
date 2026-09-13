@@ -1,15 +1,15 @@
 """SIP MESSAGE channel for text delivery."""
 from __future__ import annotations
 
-import logging
 import typing
 
 from ares.core.channel import BaseChannel, ChannelType
+from ares.core.utils.logging import get_logger
 
 if typing.TYPE_CHECKING:
     from ares.core.session import Session
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SIPMessageChannel(BaseChannel):

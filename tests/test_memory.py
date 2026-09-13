@@ -105,6 +105,12 @@ class TestAppendVsOverwrite:
         assert "alpha" in content
         assert "beta" in content
 
+    async def test_append_to_a_new_file_has_no_leading_blank_line(self, tmp_path: Path) -> None:
+        memory = FilesystemMemory(tmp_path)
+        await memory.write("long-term/new.md", "---\nname: x\n---")
+        await memory.write("long-term/new.md", "body")
+        assert (tmp_path / "long-term/new.md").read_text() == "---\nname: x\n---\nbody"
+
     async def test_overwrite_mode(self, tmp_path: Path) -> None:
         """Test that overwrite mode replaces the entire file."""
         memory = FilesystemMemory(tmp_path)

@@ -7,6 +7,7 @@ import asyncio
 import collections
 import typing
 
+from ares.core.agent import USER_INITIATED_TYPES
 from ares.core.channel import ChannelType
 from ares.core.critical import CriticalHandlerRegistry
 from ares.core.event import Event, EventBus, Priority
@@ -24,6 +25,11 @@ _CHANNEL_MAP: dict[tuple[str, str], ChannelType] = {
     ("sip", "call_speech"): ChannelType.SIP_CALL,
     ("dashboard", "web_message"): ChannelType.WEB,
 }
+
+# Wall-clock cap on one agent turn (§4.3). The worker is a FIFO: a turn wedged on
+# a hung await would silently swallow every later message from the household.
+# Generous, because tools (a call, a browser flow) legitimately take minutes.
+DEFAULT_TURN_TIMEOUT_S = 900.0
 
 # Sources whose events never change the active channel (room-only updates).
 _ROOM_ONLY_SOURCES = {"home_assistant", "scheduler", "privileges", "subagents"}
@@ -52,7 +58,11 @@ class Dispatcher:
     """
 
     def __init__(
-        self, bus: EventBus, agent: Agent, critical: CriticalHandlerRegistry
+        self,
+        bus: EventBus,
+        agent: Agent,
+        critical: CriticalHandlerRegistry,
+        turn_timeout_s: float = DEFAULT_TURN_TIMEOUT_S,
     ) -> None:
         """
         Initialize the dispatcher.
@@ -62,8 +72,10 @@ class Dispatcher:
             agent: The agent used to handle non-critical events (must expose
                 `.sessions` and an async `.handle(event)`).
             critical: The registry used to handle CRITICAL-priority events.
+            turn_timeout_s: Wall-clock cap on one `agent.handle` call.
         """
         self.bus = bus
+        self.turn_timeout_s = turn_timeout_s
         self.agent = agent
         self.critical = critical
         self._queues: dict[str, collections.deque] = {}
@@ -96,7 +108,17 @@ class Dispatcher:
                 try:
                     channel = _channel_for(event)
                     self.agent.sessions.touch(event.user_id, channel, event.room)
-                    await self.agent.handle(event)
+                    await asyncio.wait_for(
+                        self.agent.handle(event), timeout=self.turn_timeout_s
+                    )
+                except asyncio.TimeoutError:
+                    log.error(
+                        "agent turn for event %s (user=%s) exceeded %ss; abandoned",
+                        event.id,
+                        user_id,
+                        self.turn_timeout_s,
+                    )
+                    await self._say_timed_out(event)
                 except Exception:
                     log.exception(
                         "agent.handle raised for event %s (user=%s)",
@@ -105,6 +127,16 @@ class Dispatcher:
                     )
                 finally:
                     self._busy[user_id] = False
+
+    async def _say_timed_out(self, event: Event) -> None:
+        """Tell the person their request was dropped, if they asked for it."""
+        router = getattr(self.agent, "router", None)
+        if router is None or event.type not in USER_INITIATED_TYPES:
+            return
+        try:
+            await router.speak(event.user_id, "Sorry, that took too long and I had to stop.")
+        except Exception:
+            log.exception("could not report a timed-out turn")
 
     def _enqueue(self, event: Event) -> None:
         """Apply LOW/HIGH/NORMAL enqueue policy for a non-critical event."""

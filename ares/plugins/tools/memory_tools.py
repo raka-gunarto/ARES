@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import typing
-
 from ares.core.tool import BaseTool, ToolContext, ToolResult
-
-if typing.TYPE_CHECKING:
-    pass
 
 
 class MemoryGrep(BaseTool):

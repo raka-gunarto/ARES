@@ -200,3 +200,63 @@ async def test_agent_recovers_a_malformed_tool_name():
     agent, channel, _ = build_agent(llm)
     await agent.handle(make_cli_event("say hi"))
     assert channel.messages == ["hi"], "the recovered call should have run"
+
+
+async def test_rules_reminder_is_reinjected_during_long_tool_loops():
+    """Every 20 tool iterations the RULES reminder is appended again (§4.10)."""
+    from ares.core.prompt import RULES_REMINDER
+
+    llm = FakeLLM([make_tool_call_message("cX", "get_active_tasks", {})] * 30)
+    agent, _channel, _ = build_agent(llm, max_tool_iterations=25)
+    await asyncio.wait_for(agent.handle(make_cli_event("hi")), timeout=5)
+
+    def reminders(call):
+        return sum(
+            1 for m in call["messages"]
+            if m.get("role") == "system" and m.get("content") == RULES_REMINDER
+        )
+
+    assert reminders(llm.calls[19]) == 0  # the 20th call precedes iteration 20
+    assert reminders(llm.calls[20]) == 1
+    assert reminders(llm.calls[-1]) == 2  # plus the forced-final reminder
+
+
+# ---- LLM client retries -------------------------------------------------------
+
+async def test_llm_client_retries_a_rate_limit_then_succeeds(monkeypatch):
+    import httpx
+
+    from ares.core.llm import client as llm_client
+
+    replies = [
+        httpx.Response(429, headers={"retry-after": "0"}, text="slow down"),
+        httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+    ]
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return replies.pop(0)
+
+    llm = llm_client.LLMClient("https://llm.invalid/v1", "k", "m", max_retries=2)
+    llm._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(llm_client.asyncio, "sleep", fake_sleep)
+    try:
+        assert (await llm.chat([{"role": "user", "content": "hi"}]))["content"] == "ok"
+    finally:
+        await llm.aclose()
+    assert len(seen) == 2 and sleeps == [0.0]
+
+
+def test_retry_after_is_capped():
+    import httpx
+
+    from ares.core.llm.client import MAX_RETRY_AFTER_S, _retry_after_s
+
+    assert _retry_after_s(httpx.Response(429, headers={"retry-after": "3600"}), 2.0) == MAX_RETRY_AFTER_S
+    assert _retry_after_s(httpx.Response(429), 2.0) == 2.0

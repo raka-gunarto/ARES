@@ -201,3 +201,33 @@ async def test_high_priority_jumps_queue_but_does_not_preempt_in_flight(harness)
 
     order = [e.payload["n"] for e in agent.handled]
     assert order == [1, 99, 2, 3]
+
+
+async def test_a_wedged_turn_times_out_and_the_queue_moves_on():
+    """A turn that never returns is abandoned after turn_timeout_s, the person
+    is told, and the next queued event is still handled."""
+    bus = EventBus()
+    agent = FakeAgent()
+    spoken: list[tuple[str, str]] = []
+
+    class _Router:
+        async def speak(self, user_id, text):
+            spoken.append((user_id, text))
+
+    agent.router = _Router()
+    critical = CriticalHandlerRegistry(ResponseRouter(SessionManager()))
+    dispatcher = Dispatcher(bus, agent, critical, turn_timeout_s=0.05)
+    task = asyncio.create_task(dispatcher.run())
+    try:
+        await bus.publish(make_event(1))  # the gate is never released: it hangs
+        assert await _poll_until(lambda: len(spoken) == 1)
+        assert spoken[0][0] == "u" and "too long" in spoken[0][1]
+        assert agent.concurrency == 0  # the hung handle() was cancelled
+
+        agent.release.set()
+        await bus.publish(make_event(2))
+        assert await _poll_until(lambda: [e.payload["n"] for e in agent.handled] == [2])
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

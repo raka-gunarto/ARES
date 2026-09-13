@@ -213,7 +213,8 @@ class VoiceSource(BaseSource):
         if self.stt is None:
             return
 
-        transcript = self.stt.transcribe(segment_audio)
+        # Whisper takes seconds: off the event loop, or every other source stalls.
+        transcript = await asyncio.to_thread(self.stt.transcribe, segment_audio)
         if not transcript or not transcript.strip():
             return
 

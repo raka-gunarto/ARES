@@ -8,6 +8,18 @@ from ares.core.utils.logging import get_logger
 log = get_logger(__name__)
 
 
+MAX_RETRY_AFTER_S = 20.0
+
+
+def _retry_after_s(response: httpx.Response, default: float) -> float:
+    """Seconds to wait from a Retry-After header, capped so a turn never stalls."""
+    try:
+        value = float(response.headers.get("retry-after", ""))
+    except ValueError:
+        return default
+    return min(max(value, 0.0), MAX_RETRY_AFTER_S)
+
+
 class LLMError(Exception):
     """Raised when LLM communication fails after retries."""
 
@@ -88,6 +100,18 @@ class LLMClient:
             try:
                 log.debug(f"LLM chat attempt {attempt + 1}/{self.max_retries + 1}")
                 response = await self._client.post(url, json=body, headers=headers)
+
+                # Rate limited: back off (honouring a short Retry-After) and retry.
+                if response.status_code == 429:
+                    last_error = f"HTTP 429: {response.text}"
+                    if attempt < self.max_retries:
+                        delay = _retry_after_s(response, default=2.0 * (attempt + 1))
+                        log.debug(f"Rate limited, waiting {delay:.1f}s before retry")
+                        await asyncio.sleep(delay)
+                        continue
+                    raise LLMError(
+                        f"Rate limited after {self.max_retries + 1} attempts: {last_error}"
+                    )
 
                 # Retry on 5xx errors
                 if 500 <= response.status_code <= 599:

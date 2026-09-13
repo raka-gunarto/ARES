@@ -132,9 +132,11 @@ class FilesystemMemory(BaseMemory):
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
             else:
-                # Append mode (default): add leading newline then content
+                # Append mode (default): separate from existing content with a
+                # newline, but don't start a new file with a blank line.
+                has_content = path.exists() and path.stat().st_size > 0
                 with open(path, "a", encoding="utf-8") as f:
-                    f.write("\n" + content)
+                    f.write(("\n" if has_content else "") + content)
 
         await asyncio.to_thread(_write_file)
         return f"Written to {rel_path}."

@@ -40,7 +40,7 @@ class CLISource(BaseSource):
         `run_in_executor(sys.stdin.readline)` call, so this coroutine can be
         cancelled promptly during shutdown.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         try:
             reader = asyncio.StreamReader()

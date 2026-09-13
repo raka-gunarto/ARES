@@ -18,7 +18,7 @@ log = get_logger(__name__)
 try:
     import numpy as np
     import torch
-    from silero_vad import load_silero_vad, get_speech_timestamps
+    from silero_vad import load_silero_vad
 
     _HAVE_VAD = True
 except ImportError:
