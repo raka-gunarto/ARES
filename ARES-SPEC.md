@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.17
+# ARES — Implementation Specification v1.18
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -897,8 +897,8 @@ shared with the dashboard's live view (§17).
 
 | name | params | keywords | behaviour |
 |---|---|---|---|
-| `fetch_page` | `url: string`, `raw_html: boolean?`, `timeout_s: integer?` | browse, web, page, url, fetch, site, website, internet, lookup, scrape, html | Renders a **public** http(s) page with a headless Chromium (JavaScript runs) and returns its visible text, capped at 6000 chars and prefixed with an untrusted-data banner. `raw_html` returns the DOM instead. Runs as the sandbox user through the §15 runner in a throwaway profile — never as the daemon uid. The URL is vetted up front (every resolved address global, a web port) so the model gets a clear refusal, and then every connection the page makes — subresources, redirects, scripts — goes through a per-call egress proxy (`browser_proxy.py`, below) that repeats that vetting and connects only to the address it vetted; the daemon shares a link with Home Assistant, the dashboard and the updater hook, and DNS rebinding cannot swap an internal host in after the check. Chromium is an external binary, so this adds **no** dependency under §12. |
-| `browser` | `action: enum[open, read, click, type, select, key, scroll, back, forward, close]`, `url: string?`, `ref: integer?`, `text: string?`, `submit: boolean?`, `clear: boolean?`, `key: enum?`, `direction: enum[down, up]?` | browser, browse, web, click, form, login, site, website, page | (v1.16, core) Drives ONE persistent headless Chromium session (`browser_session.py`) shared with the dashboard live view. The page stays open between calls; the profile (cookies, logins) lives in `ares-browser`'s home and survives restarts. Every action returns a snapshot — URL, title, visible text with interactive elements tagged `[n]`, capped at 8000 chars, under an untrusted-data banner; password field values are never reported. Input is DevTools mouse/keyboard events; a covered element falls back to a JS click. Every connection goes through the in-daemon egress proxy (`browser_proxy.py`): host resolved by the proxy, any non-global answer or a port outside 80/443/8080/8443 refused, connection made only to the vetted address; `--proxy-bypass-list=<-loopback>`, `--disable-quic` and `disable_non_proxied_udp` WebRTC keep traffic on it. DevTools over `--remote-debugging-pipe`; downloads denied; each DevTools command times out (20 s) and each action is capped at 60 s so a hung page cannot wedge the worker. Launch: prod `sudo -n -u {browser_user} /usr/local/sbin/ares-browser-runner {fixed template}`; prod refuses if `browser_user` is empty, the daemon uid, or the `run_shell` sandbox user. Refuses while the operator has control (§17). Closes after `session_idle_close_s` idle (profile kept); session-only cookies do not survive a close. Not available to subagents (§20.2). |
+| `fetch_page` | `url: string`, `raw_html: boolean?`, `timeout_s: integer?` | browse, web, page, url, fetch, site, website, internet, lookup, scrape, html | Renders a **public** http(s) page with a headless Chromium (JavaScript runs) and returns its visible text, capped at 6000 chars and prefixed with an untrusted-data banner. `raw_html` returns the DOM instead. Runs as the sandbox user through the §15 runner in a throwaway profile — never as the daemon uid. Presents as ordinary desktop Chromium (see below). The URL is vetted up front (every resolved address global, a web port) so the model gets a clear refusal, and then every connection the page makes — subresources, redirects, scripts — goes through a per-call egress proxy (`browser_proxy.py`, below) that repeats that vetting and connects only to the address it vetted; the daemon shares a link with Home Assistant, the dashboard and the updater hook, and DNS rebinding cannot swap an internal host in after the check. Chromium is an external binary, so this adds **no** dependency under §12. |
+| `browser` | `action: enum[open, read, click, type, select, key, scroll, back, forward, close]`, `url: string?`, `ref: integer?`, `text: string?`, `submit: boolean?`, `clear: boolean?`, `key: enum?`, `direction: enum[down, up]?` | browser, browse, web, click, form, login, site, website, page | (v1.16, core) Drives ONE persistent headless Chromium session (`browser_session.py`) shared with the dashboard live view. The page stays open between calls; the profile (cookies, logins) lives in `ares-browser`'s home and survives restarts. Every action returns a snapshot — URL, title, visible text with interactive elements tagged `[n]`, capped at 8000 chars, under an untrusted-data banner; password field values are never reported. Input is DevTools mouse/keyboard events; a covered element falls back to a JS click. Every connection goes through the in-daemon egress proxy (`browser_proxy.py`): host resolved by the proxy, any non-global answer or a port outside 80/443/8080/8443 refused, connection made only to the vetted address; `--proxy-bypass-list=<-loopback>`, `--disable-quic` and `disable_non_proxied_udp` WebRTC keep traffic on it. DevTools over `--remote-debugging-pipe`; downloads denied; presents as ordinary desktop Chromium (see below); each DevTools command times out (20 s) and each action is capped at 60 s so a hung page cannot wedge the worker. Launch: prod `sudo -n -u {browser_user} /usr/local/sbin/ares-browser-runner {fixed template}`; prod refuses if `browser_user` is empty, the daemon uid, or the `run_shell` sandbox user. Refuses while the operator has control (§17). Closes after `session_idle_close_s` idle (profile kept); session-only cookies do not survive a close. Not available to subagents (§20.2). |
 
 **Egress proxy (`browser_proxy.py`).** A page opens connections the daemon never
 sees as a URL, so neither tool trusts per-URL vetting alone. Chromium is started
@@ -913,6 +913,17 @@ connects only to an address it vetted, so a rebinding answer cannot be swapped i
 after the check. It caps open connections (128, beyond which it answers 503) and
 closes a tunnel idle for 600 s, because it runs inside the daemon process and a
 hostile page must not be able to exhaust its file descriptors. Stdlib only.
+
+**Presentation (`browser_launch.py`, v1.18).** Headless Chromium announces itself
+(`HeadlessChrome` user agent, `navigator.webdriver`, a screen smaller than the
+window), and Cloudflare-style bot checks refuse it. Both tools therefore launch
+with `--user-agent` set to the desktop Linux Chrome string of the installed
+binary's own major version (read with `<binary> --version` in the launch
+template; 150 if unreadable) and without "Headless",
+`--disable-blink-features=AutomationControlled`, and `--window-size` /
+`--screen-info` both 1280×900. It claims no other OS or browser. An interactive
+challenge that still appears is solved by the operator from the Browser tab
+(§17); the clearance cookie then persists in the profile.
 
 ---
 
@@ -2257,5 +2268,17 @@ own §6.6; §3 regenerated from the tree; §4.14 documents the activity trace; �
 gains the `trace` and `speaker` blocks; §17.2 lists `/api/version` and
 `/api/trace`; stale scratch-clone wording removed (self-edit has been API-only
 since v1.2). No new dependency; the RULES block is unchanged.
+
+v1.18 (operator-authorised) makes both web tools (§6.6) present as ordinary desktop
+Chromium. Headless Chromium announced itself — `HeadlessChrome` in the user agent,
+`navigator.webdriver` true, an 800×600 screen inside a 1280×900 window — and
+Cloudflare-style bot checks never let it past "Just a moment...": `browser` could
+not reach Uber Eats to order on the operator's own account, and `fetch_page` could
+not read flight trackers. Both launches now set a user agent of the installed
+binary's own major version (read with `--version` at launch; fallback 150) without
+"Headless", `--disable-blink-features=AutomationControlled` and a screen matching
+the window. Egress proxy, user separation and the operator's role in solving an
+interactive challenge (§17) are unchanged. No new dependency; the RULES block is
+unchanged.
 
 *End of specification.*

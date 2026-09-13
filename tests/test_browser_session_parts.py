@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 
 import pytest
 
@@ -217,6 +218,38 @@ def test_launch_forces_all_traffic_through_the_proxy():
     assert "--remote-debugging-port" not in cmd
     assert '--user-data-dir="$HOME"/.ares-browser' in cmd
     assert cmd.rstrip().endswith("3<&0 4>&1 0</dev/null 1>/dev/null 2>/dev/null")
+
+
+def _run_launch(tmp_path, version_output: str) -> list[str]:
+    """Run the real template in bash against a fake chromium; return its argv."""
+    fake = tmp_path / "chromium"
+    fake.write_text(
+        "#!/bin/bash\n"
+        f"if [ \"$1\" = --version ]; then {version_output}; exit 0; fi\n"
+        'printf "%s\\n" "$@" > "$ARGS_OUT"\n'
+    )
+    fake.chmod(0o755)
+    out = tmp_path / "argv"
+    cmd = browser_launch.build_launch_command(str(fake), str(tmp_path / "prof"), 1)
+    subprocess.run(["/bin/bash", "-c", cmd], env={"PATH": "/usr/bin:/bin", "ARGS_OUT": str(out)},
+                   stdin=subprocess.DEVNULL, check=True, timeout=10)
+    return out.read_text().splitlines()
+
+
+def test_launch_presents_as_ordinary_chromium_of_the_installed_version(tmp_path):
+    """Cloudflare-style checks turn away HeadlessChrome / navigator.webdriver."""
+    argv = _run_launch(tmp_path, "echo 'Chromium 151.0.7922.173 built on Debian'")
+    ua = next(a for a in argv if a.startswith("--user-agent="))
+    assert "Chrome/151.0.0.0 " in ua and "Headless" not in ua
+    assert "--disable-blink-features=AutomationControlled" in argv
+    assert "--screen-info={1280x900}" in argv
+    assert "--proxy-bypass-list=<-loopback>" in argv  # still parsed as one word
+
+
+def test_launch_user_agent_falls_back_when_version_is_unreadable(tmp_path):
+    argv = _run_launch(tmp_path, "echo garbage")
+    ua = next(a for a in argv if a.startswith("--user-agent="))
+    assert f"Chrome/{browser_launch.FALLBACK_MAJOR}.0.0.0 " in ua
 
 
 def test_launch_quotes_hostile_profile_paths():

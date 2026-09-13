@@ -1,15 +1,15 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.17. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.18. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.17. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.18. Nothing is in progress. ***
 
-Last change: v1.17 (operator-authorised) — review-and-cleanup pass after a full
-code + docs review. Details under `## History`.
+Last change: v1.18 (operator-authorised) — web tools present as ordinary desktop
+Chromium so Cloudflare bot checks let them through. Details under `## History`.
 
 Next action: none queued. New work starts from an operator request; spec changes
 are operator-authorised, bump the version, and add an entry to spec Appendix A.
@@ -34,6 +34,24 @@ Open (non-blocking):
 
 Newest first. Entries are moved here verbatim from `## Current` when
 superseded.
+
+v1.18 (operator-authorised) — pass Cloudflare bot checks. Reported: "we're not
+passing cloudflare bot checks. make us pass it. i just want ares to order food for
+me". Trace 2026-09-13 18:49: `browser` open ubereats.com/gb sat on "Just a
+moment..." for every read; `fetch_page` had the same on flightradar24 since
+2026-09-07. Reproduced locally with the exact launch template: user agent
+`HeadlessChrome/153`, `navigator.webdriver` true, screen 800×600 in a 1280×900
+window. Fix in `browser_launch.py` (`version_probe`, `presentation_flags`, used by
+both `browser` and `fetch_page`): `--user-agent` = desktop Linux Chrome of the
+binary's own major version (`--version` at launch, fallback 150), no "Headless";
+`--disable-blink-features=AutomationControlled`; `--screen-info={1280x900}`.
+Client-hint brands were already clean ("Chromium", no Headless). Verified locally
+through the real session + egress proxy: Uber Eats, Deliveroo and Just Eat load
+first time; fetch_page returns flightradar24 content. Tests: the launch template
+is executed in bash against a fake chromium (version parsed; fallback when
+unreadable; quoting intact); fetch_page command asserts. Spec §6.6 presentation
+paragraph + Appendix A. No new dependency; RULES unchanged; proxy and uid
+separation unchanged. Xvfb/headful not needed.
 
 v1.17 (operator-authorised) — review and cleanup. Reported: "spin up sonnet 5
 subagents and do a full code review and markdown docs review, lets do some
@@ -696,6 +714,10 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-09-13 (v1.18): the browser's disguise stops at "ordinary desktop Chromium of
+  its real version" — no fake OS, GPU, plugins or other-browser UA. It is enough for
+  Cloudflare today, stays truthful about the engine, and never drifts from the
+  binary; an interactive challenge is still the operator's to solve.
 - 2026-09-13 (v1.17): turn cap is 900 s, not the subagent default — a call with
   listen or a multi-step browser flow legitimately runs minutes, and the cap exists to
   un-wedge a hung await, not to police slow turns.

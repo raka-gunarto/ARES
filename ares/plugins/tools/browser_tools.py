@@ -34,6 +34,7 @@ from urllib.parse import urlparse, urlunparse
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 from ares.core.utils.logging import get_logger
 
+from ares.plugins.tools.browser_launch import presentation_flags, version_probe
 from ares.plugins.tools.browser_proxy import EgressProxy, _is_forbidden_ip
 from ares.plugins.tools.shell_tools import RUNNER_PATH
 
@@ -233,6 +234,7 @@ class FetchPage(BaseTool):
             "--disable-extensions",
             "--disable-background-networking",
             "--disable-sync",
+            *presentation_flags(),  # bot checks turn a headless browser away
             f"--virtual-time-budget={budget_ms}",
             # Every connection — the page, its redirects, scripts, XHRs and
             # subresources — goes through the vetting proxy. `<-loopback>`
@@ -247,7 +249,8 @@ class FetchPage(BaseTool):
         binary = self.binary or BROWSER_BINARIES[0]
         # A fresh profile per fetch: no cookies, tokens or history persist.
         return (
-            f"d=$(mktemp -d) && {shlex.quote(binary)} "
+            version_probe(binary)
+            + f"d=$(mktemp -d) && {shlex.quote(binary)} "
             + " ".join(flags)
             + f" --user-data-dir=$d {shlex.quote(url)}; rc=$?; rm -rf $d; exit $rc"
         )

@@ -150,6 +150,13 @@ def test_command_forces_every_connection_through_the_proxy():
     assert "--host-resolver-rules" not in cmd
 
 
+def test_command_drops_the_headless_tells():
+    cmd = _tool()._build_command("https://ok.test/", 41234, 20000)
+    assert cmd.startswith("v=$(") and "--version" in cmd
+    assert "--disable-blink-features=AutomationControlled" in cmd
+    assert 'Chrome/${v:-' in cmd and "HeadlessChrome" not in cmd
+
+
 def test_command_uses_a_throwaway_profile():
     cmd = _tool()._build_command("https://ok.test/", 41234, 20000)
     assert "mktemp -d" in cmd and "--user-data-dir=$d" in cmd
