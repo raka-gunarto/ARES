@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 from ares.core.utils.logging import get_logger
+from ares.plugins.sip.uri import is_allowed_caller
 
 try:
     import pjsua2 as pj
@@ -298,10 +299,7 @@ class SIPService:
             call = _Call(self._acc, self, call_id)
             info = call.getInfo()
             from_uri = info.remoteUri
-            allowed = set(self.user_uris.values())
-            if from_uri not in allowed and not any(
-                a in from_uri for a in allowed
-            ):
+            if not is_allowed_caller(from_uri, self.user_uris.values()):
                 logger.warning("sip: rejecting call from %s", from_uri)
                 prm = pj.CallOpParam()
                 prm.statusCode = pj.PJSIP_SC_DECLINE

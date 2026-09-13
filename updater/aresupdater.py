@@ -49,6 +49,14 @@ log = logging.getLogger("aresupdater")
 _update_lock = threading.Lock()
 
 
+_HEX = frozenset("0123456789abcdef")
+
+
+def is_valid_sha(value: object) -> bool:
+    """True for a plain lowercase hex git object name (7-40 chars)."""
+    return isinstance(value, str) and 7 <= len(value) <= 40 and set(value) <= _HEX
+
+
 def _configure_logging() -> None:
     try:
         logging.basicConfig(
@@ -229,6 +237,11 @@ def perform_update(config: dict, new_sha: str) -> bool:
     loop) and must never leave a partially-applied release live without
     at least attempting the restart/record steps.
     """
+    # The SHA becomes a git argv element and a directory name: anything but a
+    # plain hex object name (e.g. "--upload-pack=..." or "../x") is refused.
+    if not is_valid_sha(new_sha):
+        log.error("perform_update: refusing malformed sha %r", new_sha)
+        return False
     with _update_lock:
         try:
             release_path = checkout_release(config, new_sha)

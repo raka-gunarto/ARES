@@ -22,6 +22,7 @@ from ares.core.config import ConfigError
 from ares.core.event import Priority
 from ares.core.source import BaseSource
 from ares.core.utils.logging import get_logger
+from ares.plugins.sip.uri import is_allowed_caller, user_for_caller
 
 log = get_logger(__name__)
 
@@ -71,11 +72,16 @@ class SIPSource(BaseSource):
             from_uri: The SIP URI the message came from.
             text: The message text.
         """
+        user_id = user_for_caller(from_uri, self.service.user_uris) if self.service else None
+        if user_id is None:
+            # A message becomes a user turn, so an unknown sender must not get one.
+            log.warning("sip: dropping message from unknown uri %s", from_uri)
+            return
         coro = self.emit(
             type="sip_message",
             payload={"text": text, "from_uri": from_uri},
             priority=Priority.NORMAL,
-            user_id="primary",
+            user_id=user_id,
         )
         self._schedule(coro)
 
@@ -88,11 +94,10 @@ class SIPSource(BaseSource):
         Args:
             from_uri: The SIP URI the call came from.
         """
-        # Match leniently (substring), consistent with SIPService — the incoming
-        # From URI carries angle brackets / display names / ports, e.g.
-        # '<sip:phone@172.16.0.1>', so exact set membership wrongly rejects it.
+        # Compare only the address (user@host), never the raw header: the
+        # display name is caller-controlled (see sip/uri.py).
         allowed = list(self.service.user_uris.values()) if self.service else []
-        if not any(a in from_uri for a in allowed):
+        if not is_allowed_caller(from_uri, allowed):
             log.warning("sip: rejecting call from unknown uri %s", from_uri)
             return
 

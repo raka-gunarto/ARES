@@ -188,7 +188,7 @@ def test_perform_update_aborts_on_smoke_failure(monkeypatch):
     monkeypatch.setattr(updater, "write_released_sha", fake_write_released_sha)
 
     result = updater.perform_update(
-        {"app_dir": "/tmp/app", "venv_python": "/x"}, "abc123"
+        {"app_dir": "/tmp/app", "venv_python": "/x"}, "abc1234"
     )
 
     assert result is False
@@ -238,9 +238,18 @@ def test_perform_update_swaps_on_smoke_success(monkeypatch):
     monkeypatch.setattr(updater, "write_released_sha", fake_write_released_sha)
 
     result = updater.perform_update(
-        {"app_dir": "/tmp/app", "venv_python": "/x"}, "abc123"
+        {"app_dir": "/tmp/app", "venv_python": "/x"}, "abc1234"
     )
 
     assert result is True
     # Check order: checkout, smoke, swap, restart, write
     assert call_order == ["checkout", "smoke", "swap", "restart", "write"]
+
+
+def test_perform_update_refuses_a_malformed_sha(monkeypatch):
+    """A SHA that isn't plain hex never reaches git (argv option injection)."""
+    called = []
+    monkeypatch.setattr(updater, "checkout_release", lambda c, s: called.append(s))
+    for bad in ("--upload-pack=touch /tmp/x", "../../etc", "abc", "ABCDEF1", "a" * 41, None):
+        assert updater.perform_update({"app_dir": "/tmp/app"}, bad) is False
+    assert called == []

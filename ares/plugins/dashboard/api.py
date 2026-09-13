@@ -124,8 +124,13 @@ def build_app(
     @app.post("/api/chat", dependencies=[api_auth])
     async def post_chat(request: Request) -> JSONResponse:
         """Accept a chat message from the operator and emit a web_message."""
-        body = await request.json()
-        text = body["text"]
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return JSONResponse(status_code=400, content={"error": "text is required"})
         await emit_chat(text)
         return JSONResponse(status_code=202, content={"status": "accepted"})
 

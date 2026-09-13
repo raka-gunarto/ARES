@@ -262,6 +262,14 @@ class TestChatSubmission:
             assert len(chat_messages) == 1
             assert chat_messages[0] == "hi"
 
+            # A body without usable text is a 400, not an unhandled 500.
+            for bad in ({}, {"text": "  "}, {"text": 5}, ["hi"]):
+                resp = await c.post(
+                    "/api/chat", json=bad, headers={"Authorization": f"Bearer {TOKEN}"}
+                )
+                assert resp.status_code == 400, bad
+            assert len(chat_messages) == 1
+
 
 def tasks_stub_instance() -> Any:
     """Create a stub tasks object with list_open method."""
