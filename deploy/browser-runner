@@ -1,6 +1,6 @@
 #!/bin/bash
 # ares-browser-runner — the sole sudo entry point from the `ares` daemon to the
-# `ares-browser` user, which runs the persistent Chromium session (spec §6.1).
+# `ares-browser` user, which runs the persistent Chromium session (spec §6.6).
 # Takes exactly one argument: the command string (a fixed template built by the
 # daemon). Scrubs the environment unconditionally, like ares-sbx-runner.
 #

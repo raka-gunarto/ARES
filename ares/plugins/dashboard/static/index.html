@@ -448,7 +448,7 @@ function Subagents({api,toast}){
 }
 
 /* ---------------- browser ---------------- */
-// The persistent browser ARES uses (§6.1). Watch it live, and take the wheel —
+// The persistent browser ARES uses (§6.6). Watch it live, and take the wheel —
 // above all to sign in to a site yourself, so no password goes through ARES.
 async function browserReq(token,onUnauth,path,body){
   const opts=body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};

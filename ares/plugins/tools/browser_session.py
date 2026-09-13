@@ -1,4 +1,4 @@
-"""The persistent, stateful Chromium session (spec §6.1).
+"""The persistent, stateful Chromium session (spec §6.6).
 
 One long-lived browser, shared by the main agent's `browser` tool and the
 operator's live view on the dashboard. Its profile persists on disk so sites

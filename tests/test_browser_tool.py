@@ -1,4 +1,4 @@
-"""The stateful `browser` tool and its dashboard live-view routes (§6.1, §17)."""
+"""The stateful `browser` tool and its dashboard live-view routes (§6.6, §17)."""
 from __future__ import annotations
 
 import asyncio

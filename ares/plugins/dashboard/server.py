@@ -85,7 +85,7 @@ class DashboardSource(BaseSource):
             home_provider: optional async zero-arg callable () -> bool telling
                 whether someone is home (the speaker channel's presence check),
                 surfaced in /api/status. None => home reads as unknown.
-            browser: optional persistent BrowserSession (§6.1) behind the
+            browser: optional persistent BrowserSession (§6.6) behind the
                 Browser tab's live view. None => no /api/browser routes.
 
         Raises:

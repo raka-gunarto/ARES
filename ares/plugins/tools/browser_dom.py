@@ -1,4 +1,4 @@
-"""In-page scripts for the stateful browser (spec §6.1).
+"""In-page scripts for the stateful browser (spec §6.6).
 
 The model cannot see pixels, so a page is handed to it as text in which every
 visible interactive element carries a numbered ref — `[12] button "Sign in"` —

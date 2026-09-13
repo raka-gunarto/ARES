@@ -224,7 +224,7 @@ async def test_sipcallchannel_deliver_no_active_call():
 
 
 def test_comms_tools_length():
-    """COMMS_TOOLS holds exactly the three SIP tools (spec §6.1)."""
+    """COMMS_TOOLS holds exactly the three SIP tools (spec §6.5)."""
     assert [t.name for t in COMMS_TOOLS] == [
         "place_call",
         "end_call",

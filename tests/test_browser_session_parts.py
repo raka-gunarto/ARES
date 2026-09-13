@@ -1,4 +1,4 @@
-"""Stateful browser (§6.1): egress proxy, DevTools pipe, launch template."""
+"""Stateful browser (§6.6): egress proxy, DevTools pipe, launch template."""
 from __future__ import annotations
 
 import asyncio

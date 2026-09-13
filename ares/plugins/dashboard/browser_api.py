@@ -1,4 +1,4 @@
-"""Dashboard routes for the persistent browser's live view (spec §17, §6.1).
+"""Dashboard routes for the persistent browser's live view (spec §17, §6.6).
 
 The operator watches the page ARES is using and can take the wheel — above
 all to sign in to a site themselves, so no password ever passes through the

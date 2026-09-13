@@ -1,4 +1,4 @@
-"""Egress proxy for the stateful browser (spec §6.1).
+"""Egress proxy for the stateful browser (spec §6.6).
 
 `fetch_page` vets one URL and pins its address with `--host-resolver-rules`.
 A persistent, interactive browser cannot work that way: links, redirects,

@@ -156,7 +156,7 @@ plugins:
     # browser_binary to override the default `chromium`.
     browser_timeout_default_s: 30
     browser_timeout_max_s: 90
-    # Stateful `browser` tool (§6.1): a persistent, logged-in Chromium running as
+    # Stateful `browser` tool (§6.6): a persistent, logged-in Chromium running as
     # its own user. Production: ares-browser (prod omits the tool if unset).
     # "" = run as the daemon user (DEV ONLY).
     browser_user: ""

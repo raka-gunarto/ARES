@@ -1,4 +1,4 @@
-"""Chrome DevTools Protocol client over `--remote-debugging-pipe` (spec §6.1).
+"""Chrome DevTools Protocol client over `--remote-debugging-pipe` (spec §6.6).
 
 Pipe mode frames each JSON message with a NUL byte. Chromium reads commands on
 fd 3 and writes replies/events on fd 4; the launch command maps those onto the

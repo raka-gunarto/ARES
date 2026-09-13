@@ -1,4 +1,4 @@
-"""Input primitives for the stateful browser (spec §6.1).
+"""Input primitives for the stateful browser (spec §6.6).
 
 Real DevTools input events rather than `element.click()` in JS, so pages see
 the same trusted events a person produces. Shared by the agent's `browser`

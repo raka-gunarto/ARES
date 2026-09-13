@@ -86,7 +86,7 @@ def build_app(
             someone is home). None if unavailable.
         subagents_provider: async callable () -> list[dict] of recent background
             runs (spec §20). None if subagents are disabled.
-        browser: the persistent BrowserSession (§6.1) for the live view, or
+        browser: the persistent BrowserSession (§6.6) for the live view, or
             None when the stateful browser is off (no /api/browser routes).
 
     Returns:

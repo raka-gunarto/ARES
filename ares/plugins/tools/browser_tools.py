@@ -1,4 +1,4 @@
-"""Headless-browser page fetch, run in the sandbox (spec §6.1, §15).
+"""Headless-browser page fetch, run in the sandbox (spec §6.6, §15).
 
 Adds NO Python dependency: Chromium is an external binary driven by argv, the
 same arrangement spec §12 already sanctions for Piper, grep and git. Rendering

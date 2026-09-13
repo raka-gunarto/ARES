@@ -201,7 +201,7 @@ async def main(config_path: str) -> None:
         merged = {**shell_config, **browser_config}
         for t in build_browser_tools(merged):
             registry.register(t)
-        # The stateful browser (§6.1) needs its own uid for the login profile;
+        # The stateful browser (§6.6) needs its own uid for the login profile;
         # in prod it is only offered once that user is configured.
         browser_user = browser_config.get("browser_user", "")
         if browser_user or os.environ.get("ARES_ENV", "dev") != "prod":

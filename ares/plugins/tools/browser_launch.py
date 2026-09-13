@@ -1,4 +1,4 @@
-"""Launch template and user-separation check for the stateful browser (§6.1).
+"""Launch template and user-separation check for the stateful browser (§6.6).
 
 Kept apart from the session so the security-relevant parts — which uid runs
 the browser, and the exact argv it gets — can be read and tested on their own.

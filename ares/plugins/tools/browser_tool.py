@@ -1,4 +1,4 @@
-"""The stateful `browser` tool (spec §6.1).
+"""The stateful `browser` tool (spec §6.6).
 
 One tool with an `action` argument rather than eight tools: it keeps the core
 set small, and every action returns a fresh page snapshot so the model always

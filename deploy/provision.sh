@@ -43,7 +43,7 @@ ensure_user() {
 }
 ensure_user ares ""
 ensure_user ares-sbx "${SBX_HOME}"
-# The persistent browser (§6.1) gets its OWN user: its profile holds the
+# The persistent browser (§6.6) gets its OWN user: its profile holds the
 # operator's logged-in sessions, and run_shell executes as ares-sbx.
 ensure_user ares-browser "${BROWSER_HOME}"
 ensure_user ares-deploy ""
@@ -86,7 +86,7 @@ if [[ ! -e "${STATE_DIR}/privq.db" ]]; then
     install -o ares -g ares -m 0600 /dev/null "${STATE_DIR}/privq.db"
 fi
 
-# sandbox scratch clone, owned by ares-sbx.
+# sandbox scratch dir for run_shell, owned by ares-sbx.
 install -d -o ares-sbx -g ares-sbx -m 0700 "${SBX_HOME}/scratch"
 
 # browser home: 0700 so neither ares nor ares-sbx can read the login profile.
@@ -104,7 +104,7 @@ log "installed browser runner ${BROWSER_RUNNER_DST}"
 
 # 4. The narrow sudoers entries (§14.1). Nothing else gets sudo.
 #  - ares may drop to ares-sbx ONLY via the runner (§15); no other command.
-#  - ares may drop to ares-browser ONLY via the browser runner (§6.1).
+#  - ares may drop to ares-browser ONLY via the browser runner (§6.6).
 #  - ares-deploy may restart the ares unit (the updater's one privileged action).
 # There is deliberately NO sudoers rule granting `ares` any root.
 umask 077

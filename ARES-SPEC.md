@@ -1,219 +1,13 @@
-# ARES — Implementation Specification v1.16
+# ARES — Implementation Specification v1.17
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
 v1 implementation. It is written to be executed by a coding agent **without creative
 interpretation**. If something is not in this document, it is not in v1.
 
-v1.1 adds the deployment & self-modification layer: Firecracker microVM security
-model (§14), sandboxed shell (§15), privilege escalation queue + root broker (§16),
-web dashboard (§17), self-edit/PR workflow (§18), and the update listener (§19).
-Operator-facing setup lives in `DEPLOYMENT.md`, which is not an implementation input.
-
-v1.2 hardens the runtime system prompt against injection from tool/memory/
-external content (§4.11 carries the fixed RULES block; annotated version in
-ARES-SYSTEM-PROMPT.md) and adds the `websockets` dependency (§12) that makes the
-Home Assistant live event transport (§7.3) implementable.
-
-v1.3 adds the `read_source` self-inspection tool (§18): a read-only, daemon-side
-tool that lets ARES read its own source in the same repo-relative path space
-`open_pr` writes, so it can reason about what to change before proposing an edit.
-It surfaces the daemon's *existing* read-only access to `/opt/ares/app` (§14.2)
-to the model — it grants no new privilege, never leaves the source tree, and
-never reads the secrets file. No new dependency.
-
-v1.4 promotes the four **recall/store** memory tools (`memory_grep`,
-`memory_read`, `memory_list`, `memory_write`) from discoverable (§6.1) to **core /
-always-in-context** (§5), so ARES recalls and stores without first having to
-`search_tools` for the capability — enabling proactive memory use. The
-destructive `memory_delete` stays discoverable-only (§6.1). No new tool, no new
-dependency; this only changes which existing tools are always loaded.
-
-v1.5 makes the two Home Assistant tools actually able to control real devices
-(§6.1). `control_device` gains a `data: object?` param passed verbatim as the
-HA service's named fields — HA services take named parameters (`set_hvac_mode`
-needs `hvac_mode`, `set_fan_mode` needs `fan_mode`, …), which a single `value`
-string cannot express, so anything but `set_temperature` previously failed. It
-also reports the entity's resulting state instead of HA's raw array. `get_home_state`
-gains an `attributes: string[]?` param and now returns a single entity's **full**
-attribute set by default (so the model can see `hvac_modes`, `supported_features`,
-`current_temperature`, … and decide how to act); a domain listing stays state-only
-unless `attributes` is given. No new tool, no new dependency.
-
-v1.6 adds a **context guard** to the agent loop (§4.10) so a long/heavy tool loop
-can no longer push the assembled messages past the model's context window or let
-a provider silently truncate the system prompt. `LLMConfig` gains `context_window`
-(the input-token budget) and `max_tokens` (per-call output cap, sent as OpenAI
-`max_tokens` and reserved from the window). Before every LLM call the agent fits
-`messages` to that budget with a cheap char/4 token estimate (no tokenizer dep):
-messages[0] (the system prompt + RULES) is **never** trimmed — the guard drops
-oldest non-system messages and never leaves an orphan `tool` result. Each tool
-result is capped (~1/8 of the window) so one dump can't dominate, and a compact
-`RULES_REMINDER` (fixed code constant, never config) is reinjected every 20 tool
-iterations and before the forced-final turn. No new dependency.
-
-v1.7 fixes in-call turn-taking (§7.5) and adds two ways to stop noise reaching
-the agent. On a call, the listener and the reply shared one pjsua2 thread, so a
-reply queued behind a recording pass that had opened the instant the previous
-transcript was emitted and was only capturing the caller listening — the caller
-waited out the whole `record_seconds` cap for every answer. Deciding to speak (or
-hanging up) now aborts the pass in flight, no pass is opened while ARES has the
-floor, and the cap runs from first speech rather than from pass open. A pass that
-heard no speech is no longer transcribed at all: Whisper turns near-silence into
-stock phrases ("you"), and each phantom transcript spent a full serialized agent
-cycle ahead of the caller's real words. STT gains `vad_filter` / no
-`condition_on_previous_text`. New tool `end_call` (§6.1) lets ARES hang up, with
-an optional farewell spoken before the line drops. On the Home Assistant side,
-§7.3 gains a `blocked_entities` deny-list of `entity_id` globs, applied ahead of
-both allow-lists — a chatty integration usually sits inside a domain that is
-otherwise wanted. No new dependency.
-
-v1.9 gives `monitoring` tasks a real clock (§7.2). They previously had none: the
-scheduler only ever fired `reminder_pending`, so a monitoring task was a passive
-note that the agent reconsidered only when some unrelated event woke it — the live
-trace measured a task promising "every 30 minutes" receiving exactly one check in
-nine hours, while the agent told the user it would keep checking and notify them.
-`create_task` gains `check_every_minutes`, which arms `data.check_interval_s` /
-`data.next_check_at` (stored in the existing `data` blob, so no schema change), and
-the 60 s scheduler pass emits a re-arming NORMAL `task_check` for each armed task
-that is due. `due_at` bounds the watch and the last check is flagged `final`.
-Unarmed tasks behave exactly as before, and `create_task` now says so explicitly
-when a monitoring task is created without a timer, so the agent stops promising a
-cadence nothing backs.
-
-v1.8 adds `fetch_page` (§6.1): a headless-browser page fetch, and promotes it and
-`run_shell` into the always-loaded core set (§5, now twelve tools). Chromium is
-driven as an **external binary** exactly as §12 already sanctions for Piper, grep
-and git, so **no Python dependency is added** and §12 stands unamended. A browser
-is the largest untrusted-input surface in the system, so the risk is handled in
-code rather than left to the model: it executes only as the sandbox user through
-the single §15 runner, in a throwaway profile discarded after each fetch; every
-resolved address must be global, so the host-private link (Home Assistant, the
-dashboard, the updater hook), loopback and link-local are refused *before*
-Chromium starts; the vetted address is then pinned with `--host-resolver-rules`
-so a rebinding DNS answer cannot swap it; and the URL is shell-quoted into a
-fixed argv. Returned text is capped and banner-labelled as untrusted data, which
-the frozen RULES already classes as non-instruction.
-
-v1.10 adds **background subagents** (§20, F25): bounded autonomous runs the agent
-starts for work too long to do inline, which report back on the event bus while
-the main loop stays free. A run IS a `multi_step` task row carrying a `subagent`
-block, so durability, prompt visibility and dashboard rendering all reuse the
-task store rather than inventing a parallel one (§20.1). Its toolset is a fixed
-code-constant **allowlist** (§20.2) — read-only, `run_shell` deliberately
-excluded, because an unattended loop reading fetched web pages is precisely the
-combination §14 exists to prevent. Reports arrive as `subagent_done` / 
-`subagent_progress` events from a room-only source, so a completion never hijacks
-the active channel and is rendered as fenced `[EVENT ...]` data (§20.3). No new
-dependency.
-
-v1.11 makes the agent actually *reach* for §20 unprompted, by adding two bullets
-to the frozen RULES block (§4.11). Four days of live trace after v1.10 shipped
-recorded `spawn_subagent` being called **zero** times while the main loop made 28
-inline `fetch_page` calls — ten inside a single cycle, holding the household's one
-serialized queue for 116 s. The tool was always reachable (`core: true`) and its
-own description already said to prefer it over a long inline investigation, which
-is the finding: a tool description is not a behavioural trigger, because the model
-picks its approach at the start of a turn and is committed long before the third
-fetch. Standing turn-start behaviour belongs in RULES. The second bullet closes
-the return path — a finished run arrives as an ambient event, and every ambient
-event in that same window ended in `IGNORE`, so without it the answer the person
-waited for is silently swallowed. No new tool, no new dependency, no interface
-change; this only changes what the agent is told.
-
-v1.12 fixes a delivery bug in §4.10 step 8: a substantive final answer was
-silently dropped whenever the model had already called `speak` once in the turn —
-even if that `speak` was only an acknowledgement ("On it, checking now") and the
-real answer lived in the final assistant message. Live trace showed the failure
-repeatedly (a gate lookup where the caller heard "checking now" and never got
-"Gate C6"; a terminal lookup; an AC-set confirmation). Step 8 now also delivers
-the final message after a `speak` when `utils.text.unspoken_final` judges it a
-dropped answer rather than a note-to-self: it must be at least as long as
-everything already spoken (an answer after a brief ack, not a shorter summary of
-a full spoken reply), carry more than filler, and not merely restate what was
-spoken. Across two months of trace this delivers 7 previously-lost answers and
-leaks none of the internal status notes it must not speak. No new tool, no new
-dependency; `agent.py` stays within the 400-line limit by housing the decision in
-`utils.text`.
-
-v1.13 makes delivery presence-aware (§4.5). The `WEB` channel used to accept
-every `speak` into an in-memory outbox and return `True` even when no browser
-was polling, so a reply spoken while the user was away from the dashboard was
-lost to a queue no one drained — "speaking to no one." `WebChannel.deliver` now
-returns `False` unless a long-poll is actually connected (presence is the count
-of in-flight polls, plus a short grace between consecutive polls — a "polled
-recently" window proved too loose on mobile, where a backgrounded tab looked
-present but received nothing), letting the router fall through. A new optional `SPEAKER` channel sits
-ahead of `PUSH` in the `speak` fallback: when a configured presence entity
-(`person.*`) reads `home`, it announces the message aloud on a Home Assistant
-speaker via TTS (a generic `tts` service call configured to fit either the
-modern `tts.speak` shape or a legacy `tts.<engine>_say`); when no one is home it
-declines and delivery continues to `PUSH` (the phone). The speaker plugin
-receives the HA service by injection
-(no plugin-to-plugin import) and is wired only when Home Assistant is enabled
-and a `speaker` config block is present. No new tool, no new dependency.
-
-v1.14 corrects the v1.13 web-presence signal (§4.5). v1.13 judged the dashboard
-"present" if it had long-polled within 60s; a live trace caught the failure that
-exposes — a user out of the house asked a question on the web dashboard, got a
-correct answer in 18s, and never received it. Their mobile tab was backgrounded:
-still inside the 60s window (so the router committed the reply to the web outbox
-and did **not** fall through to push) but with no live connection to drain it, so
-the answer was consumed by a dead poll and lost, reaching neither web nor phone.
-Presence is now the count of **in-flight** long-polls (plus a short grace that
-bridges the gap between consecutive polls), so a backgrounded or closed session
-is correctly treated as absent and the reply falls through to speaker/push. The
-poll endpoint brackets its wait with `poll_started`/`poll_finished` (the close
-runs even on client disconnect). Backend-only; no new tool or dependency. A
-residual mobile race remains — a reply delivered into a still-open but suspended
-connection can be dropped — which needs cursor-based replay (the `since`
-parameter, still stubbed) to fully close; tracked as future work.
-
-v1.15 closes that residual race and refreshes the dashboard (§4.5, §17). The
-`WEB` channel is now a **replayable buffer**: every delivered reply is appended
-with a monotonic sequence number (bounded ring buffer), and `deliver` returns
-whether a browser is present *now* (unchanged router semantics) while always
-recording the reply. `/api/chat/poll` becomes cursor-based — the browser polls
-from the last sequence it saw (the `since` parameter, now live and persisted in
-`localStorage`) and the endpoint returns everything after it plus the new
-cursor. A reply committed to a poll that never reaches a frozen tab is therefore
-no longer lost: on reconnect the tab re-polls from its cursor and catches up (a
-`since` ahead of the server's counter, e.g. after a restart, triggers a full
-resync). Two dashboard additions surface current capabilities: `/api/status`
-reports where a reply would land right now (web presence, the router's
-`last_channel`, and whether anyone is home) as a header badge, and
-`/api/subagents` lists recent background runs (§20) — open plus recently closed,
-via `SubagentManager.list_all_runs` — as a new **Subagents** tab. Backend adds
-no dependency; the speaker channel's `anyone_home` is made public to feed the
-status badge; the frontend is rebuilt from source.
-
-v1.16 (operator-authorised) adds a **stateful browser** (§6.1): a core `browser`
-tool that drives one persistent Chromium session — the page stays open between
-calls and cookies/logins persist on disk across restarts — alongside the
-stateless `fetch_page`, which is unchanged. Every action (`open`, `read`,
-`click`, `type`, `select`, `key`, `scroll`, `back`, `forward`, `close`) returns a
-fresh untrusted-data snapshot in which interactive elements carry numbered refs
-the model acts on; input is real DevTools mouse/keyboard events. Because an
-interactive page opens connections the daemon never sees as a URL, the
-per-URL vetting of `fetch_page` is replaced by an in-daemon **egress proxy**
-that every browser connection is forced through (loopback bypass removed, QUIC
-and non-proxied WebRTC disabled): it resolves each host itself, refuses any
-non-global answer and any non-web port, and connects only to the address it
-vetted. DevTools runs over `--remote-debugging-pipe` (no debugging port).
-Downloads are denied. The logged-in profile makes the browser a credential
-store, so Chromium runs as a new dedicated **`ares-browser`** user (§14.1)
-through its own audited sudo runner — not the daemon uid, and not `ares-sbx`,
-since `run_shell` could otherwise read the cookies; prod refuses to launch
-without that separation. The dashboard gains a **Browser** tab (§17): a live
-view (screencast, streamed only while someone watches) where the operator can
-take control — above all to sign in themselves, so no password passes through
-the model; while the operator is in control the tool refuses, and control
-returns to ARES when handed back or after 10 idle minutes. The browser closes
-itself after 30 idle minutes (the profile is kept). Subagents do **not** get
-the browser (§20.2). The RULES block's SENSITIVE ACTIONS bullet (§4.11) now
-names acting in the browser as the person — submitting, buying, posting,
-sending, changing account settings — as sensitive. No new dependency (Chromium
-remains an external binary).
+Operator-facing setup lives in `DEPLOYMENT.md`, which is not an implementation
+input. How the spec reached this version — each revision and why — is in
+Appendix A at the end.
 
 ---
 
@@ -296,10 +90,11 @@ ARES is a persistent agent daemon running on home hardware. It:
 | F19 | Sandboxed shell tool (`run_shell` as low-privilege user) | plugin |
 | F20 | Privilege escalation queue + root command broker (human-approved) | plugin + `broker/` |
 | F21 | Web dashboard: chat, memory browser, tasks, approval queue | plugin |
-| F22 | Self-edit workflow: scratch clone → branch → PR, human-gated merge | plugin |
+| F22 | Self-edit workflow: API-only branch → PR, human-gated merge | plugin |
 | F23 | Update listener: GitHub webhook + polling → pull → daemon restart | `updater/` |
 | F24 | Firecracker microVM runtime model: RO code, hidden secrets, user separation | `deploy/` |
 | F25 | Background subagents: bounded autonomous runs that report back on the event bus | core + plugin |
+| F26 | Web access: stateless page fetch + persistent, operator-supervised browser | plugin |
 
 ### Explicitly OUT of scope for v1 (do not build)
 
@@ -308,7 +103,7 @@ ARES is a persistent agent daemon running on home hardware. It:
   `user_id="primary"`; the architecture supports multiple users, v1 configures one)
 - Streaming LLM responses (buffered responses only)
 - Wake-word training tooling
-- HA service beyond the four home tools listed in §7.4
+- HA service beyond the four home tools listed in §6.3
 - Authentication on the CLI source
 - Music/media playback
 - Vision analysis of camera snapshots
@@ -330,12 +125,12 @@ ARES is a persistent agent daemon running on home hardware. It:
 │ voice rooms  │─┐                                              ┌▶│ voice TTS    │
 │ home assist. │─┤   ┌──────────┐   CRITICAL  ┌──────────────┐  │ │ sip call     │
 │ sip          │─┼──▶│ EventBus │────────────▶│CriticalRouter│  │ │ sip message  │
-│ scheduler    │─┤   └────┬─────┘             └──────────────┘  │ │ push (ntfy)  │
-│ cli          │─┘        │ NORMAL/HIGH/LOW                     │ │ console      │
-└──────────────┘          ▼                                     │ └──────────────┘
-                   ┌────────────┐  per-user serial dispatch     │
-                   │ Dispatcher │────────┐                      │
-                   └────────────┘        ▼                      │
+│ scheduler    │─┤   └────┬─────┘             └──────────────┘  │ │ speaker (HA) │
+│ cli          │─┤        │ NORMAL/HIGH/LOW                     │ │ push (ntfy)  │
+│ dashboard    │─┤        ▼                                     │ │ web          │
+│ privileges   │─┤ ┌────────────┐  per-user serial dispatch     │ │ console      │
+│ subagents    │─┘ │ Dispatcher │────────┐                      │ └──────────────┘
+└──────────────┘   └────────────┘        ▼                      │
                                   ┌────────────┐ speak/notify   │
         SessionManager ◀────────▶ │   Agent    │───▶ ResponseRouter
         TaskStore      ◀────────▶ │ (LLM loop) │
@@ -356,22 +151,29 @@ ares/
   pyproject.toml
   README.md
   PROGRESS.md
+  ARES-SPEC.md
+  ARES-SYSTEM-PROMPT.md  # RULES block, annotated (byte-identical to §4.11)
+  CLAUDE.md              # working rules for the implementing agent
+  DEPLOYMENT.md          # operator guide (not an implementation input)
   ares/
     __init__.py
     core/
       __init__.py
       event.py           # Priority, Event, EventBus
-      dispatcher.py      # per-user serial dispatch, LOW-priority policy
+      dispatcher.py      # per-user serial dispatch, LOW/HIGH policy, turn cap
       critical.py        # CriticalHandlerRegistry + BaseCriticalHandler
       source.py          # BaseSource
-      channel.py         # BaseChannel
+      channel.py         # ChannelType, BaseChannel
       router.py          # ResponseRouter
       session.py         # Session, SessionManager
-      tool.py            # BaseTool, ToolRegistry, ToolResult
+      tool.py            # BaseTool, ToolRegistry, ToolResult, ToolContext
       agent.py           # Agent: event → prompt → LLM tool loop → done
-      prompt.py          # system prompt assembly (single function, templated)
-      config.py          # Config loading, !secret resolution, typed models
+      prompt.py          # system prompt assembly, RULES, RULES_REMINDER
+      config.py          # Config loading, !secret resolution, typed models, prod tripwires
       secrets.py         # BaseSecretStore, EnvSecretStore
+      trace.py           # Tracer: rotating JSONL activity trace          §4.14
+      subagents.py       # SubagentManager: runs as task rows            §20
+      subagent_run.py    # the subagent loop + fixed tool allowlist     §20.2
       memory/
         __init__.py
         base.py          # BaseMemory
@@ -386,7 +188,7 @@ ares/
         __init__.py
         logging.py       # setup_logging(), get_logger()
         ids.py           # new_id() -> str (uuid4 hex)
-        text.py          # tokenize(s) -> list[str]  (lowercase word split)
+        text.py          # tokenize(), unspoken_final()
     plugins/
       __init__.py
       sources/
@@ -404,13 +206,15 @@ ares/
         __init__.py
         console.py
         push_ntfy.py
+        speaker.py       # SPEAKER: Home Assistant TTS when someone is home §4.5
         voice_tts.py     # Piper TTS playback per room
         sip_call.py
         sip_message.py
       sip/
         __init__.py
-        client.py        # shared PJSIP account/registration
+        client.py        # shared PJSIP account/registration (SIPService)
         source.py        # inbound calls + messages -> events
+        uri.py           # caller allow-list address matching
       critical/
         __init__.py
         safety.py        # fire/intruder deterministic handlers
@@ -424,7 +228,16 @@ ares/
         time_tools.py
         comms_tools.py
         shell_tools.py   # run_shell (sandboxed)                        §15
+        browser_tools.py # fetch_page (stateless)                       §6.6
+        browser_tool.py  # browser (stateful)                           §6.6
+        browser_session.py # the one persistent Chromium session
+        browser_launch.py  # launch command + prod user-separation check
+        browser_cdp.py   # DevTools protocol over --remote-debugging-pipe
+        browser_dom.py   # page snapshot / element-ref JavaScript
+        browser_input.py # mouse/keyboard input, operator input
+        browser_proxy.py # egress proxy: public web addresses only
         selfedit_tools.py# read_source, open_pr, get_pr_status          §18
+        subagent_tools.py# spawn/list/cancel subagents, get result      §20
       privileges/
         __init__.py
         store.py         # PrivStore (aiosqlite)                        §16
@@ -434,18 +247,24 @@ ares/
         __init__.py
         server.py        # DashboardSource: config validation + uvicorn §17
         api.py           # FastAPI routes
-        channel.py       # WebChannel (per-user outbox)
+        browser_api.py   # /api/browser/* routes (live view + control)
+        channel.py       # WebChannel (per-user replay buffer)
+        frontend/        # UI source: Preact via htm, no external CDN
+          index.html
+          htm-preact-standalone.umd.js
+          build.py       # inlines the bundle -> static/index.html
         static/
-          index.html     # single-file UI, vanilla JS
+          index.html     # built single-file UI (commit it after rebuilding)
   broker/                # ROOT-run, STDLIB-ONLY, never imports ares    §16
     aresbrokerd.py
     broker.example.json
   updater/               # deploy-user-run, STDLIB-ONLY, never imports ares §19
     aresupdater.py
+    updater.example.json
   deploy/                # static operator artifacts (see DEPLOYMENT.md)
     provision.sh         # in-VM provisioning: users, dirs, perms, sudoers, units
     sbx-runner           # sole sudo entry point ares -> ares-sbx; installed to /usr/local/sbin
-    browser-runner       # sole sudo entry point ares -> ares-browser (§6.1)
+    browser-runner       # sole sudo entry point ares -> ares-browser (§6.6)
     ares.service
     ares-broker.service
     ares-updater.service
@@ -456,13 +275,14 @@ ares/
     memory/
       INDEX.md
       short-term/.gitkeep
-      long-term/.gitkeep
+      long-term/*.md
     tasks/.gitkeep
   tests/
     ...
 ```
 
-`.env` and `tasks/*.db` are gitignored.
+`.env`, `updater.env`, `tasks/*.db`, `privq.db`, `broker.json` and
+`updater.json` are gitignored.
 
 ---
 
@@ -524,7 +344,8 @@ then the source is disabled and a `source_failed` NORMAL event is emitted).
 ```python
 class Dispatcher:
     def __init__(self, bus: EventBus, agent: Agent,
-                 critical: CriticalHandlerRegistry) -> None
+                 critical: CriticalHandlerRegistry,
+                 turn_timeout_s: float = 900.0) -> None
     async def run(self) -> None
 ```
 
@@ -540,6 +361,13 @@ class Dispatcher:
   LOW events are dropped with an INFO log. Otherwise processed normally.
 - **HIGH policy (v1):** HIGH events jump to the front of the user's queue.
   They do **not** cancel an in-flight cycle. (Interruption is out of scope.)
+- **Turn cap:** each `agent.handle` runs under `asyncio.wait_for(...,
+  turn_timeout_s)`. The queue is strictly serial, so one turn stuck on a hung
+  await would otherwise swallow every later message from that user without a
+  sound. A turn that hits the cap is abandoned with an ERROR log and, if the
+  event was user-initiated, the user is told it took too long; the worker moves
+  on to the next event. The cap is generous because tools such as a call or a
+  browser flow legitimately take minutes.
 
 ### 4.4 `core/critical.py`
 
@@ -555,9 +383,9 @@ class CriticalHandlerRegistry:
     async def handle(self, event: Event) -> None   # first match wins; no match -> ERROR log
 ```
 
-Handlers are plain code: e.g. the fire handler broadcasts a fixed TTS phrase
-to all voice rooms, sends a push, and creates a `monitoring` task directly via
-`TaskStore` — no LLM.
+Handlers are plain code: e.g. the fire handler announces a fixed phrase on every
+speaker and voice room, sends a push, phones an away user, and creates a
+`monitoring` task directly via `TaskStore` — no LLM (§7.7).
 
 ### 4.5 `core/channel.py` + `core/router.py`
 
@@ -609,7 +437,10 @@ message aloud when a configured presence entity reads `home`, and returns
 `False` when no one is home so delivery continues to `PUSH` (the user's phone).
 The `SPEAKER` plugin receives the Home Assistant service by injection and is
 wired only when Home Assistant is enabled; with no `speaker` config block it is
-never registered and the chain is `PUSH` → `CONSOLE` as before.
+never registered and the chain is `PUSH` → `CONSOLE` as before. Besides `deliver`,
+the speaker channel exposes `anyone_home()` (the presence check, also used by
+`/api/status`) and `announce(message)`, which speaks unconditionally — the path
+the safety handlers use (§7.7).
 
 ### 4.6 `core/session.py`
 
@@ -714,7 +545,8 @@ class LLMClient:
 ```
 
 `httpx.AsyncClient`, POST `{base_url}/chat/completions`. Retries on network
-errors and 5xx with 2 s backoff. Raises `LLMError` after exhausting retries.
+errors and 5xx with 2 s backoff, and on 429 honouring `Retry-After` (capped at
+20 s; without the header, 2 s × attempt). Raises `LLMError` after exhausting retries.
 No streaming. When `max_tokens` is set it is sent as the OpenAI `max_tokens`
 field (per-call output cap); when None it is omitted.
 
@@ -949,6 +781,25 @@ class TaskStore:
     async def history(self, user_id: str, limit: int = 20) -> list[Task]
 ```
 
+### 4.14 `core/trace.py`
+
+```python
+class Tracer:
+    def __init__(self, path: str | Path, max_bytes: int, backups: int,
+                 enabled: bool = True) -> None
+    def emit(self, kind: str, **fields) -> None
+```
+
+A live activity trace: one JSON object per line for each inbound event (the
+person's own text included), each model reply with any reasoning it exposes,
+each tool call with its arguments and result, and the final delivered reply.
+Written through a size-capped rotating file handler (`trace.max_mb`,
+`trace.backups`, §8); long string fields are clipped. Tracing is best-effort:
+construction and every `emit` swallow their own errors, and a disabled or
+unopenable trace is a silent no-op (`NullTracer`). The dashboard tails the
+active file (`/api/trace`, §17.2). The trace holds conversation content, so it
+lives under `/var/lib/ares` with the rest of the daemon's private state.
+
 ---
 
 ## 5. Core Tools (always in context)
@@ -957,10 +808,10 @@ Six tools defined in `plugins/tools/core_tools.py`, plus (since v1.4) the four
 recall/store memory tools defined in `plugins/tools/memory_tools.py`, plus
 (since v1.8) `run_shell` and `fetch_page`, plus (since v1.16) `browser` —
 thirteen tools total, all `core = True`, all always loaded into the LLM context
-(no `search_tools` step required). `run_shell` (§15) and `fetch_page` (§6.1) are
+(no `search_tools` step required). `run_shell` (§15) and `fetch_page` (§6.6) are
 core because both are routine and both were being missed behind the discovery
 step; neither gains any privilege from the promotion — both still execute only
-as the sandbox user. `browser` (§6.1) runs as its own `ares-browser` user and
+as the sandbox user. `browser` (§6.6) runs as its own `ares-browser` user and
 is registered only when the `browser` plugin is enabled (in prod, only once
 `browser_user` is configured).
 
@@ -982,8 +833,8 @@ The four core memory tools (`memory_grep`, `memory_read`, `memory_list`,
 
 ## 6. Discoverable Tools (loaded via `search_tools`)
 
-All `core = False` **except** the four memory recall/store tools in §6.1, which
-are `core = True` (v1.4) and always in context per §5. Keywords shown are the
+All `core = False` **except** the four memory recall/store tools in §6.1 and
+the two web tools in §6.6, which are `core = True` and always in context per §5. Keywords shown are the
 minimum set; implementers may add synonyms but never remove listed ones.
 
 ### 6.1 `memory_tools.py`
@@ -1027,17 +878,41 @@ If the service is missing from `ctx.services`, every home tool returns
 |---|---|---|---|
 | `get_weather` | `when: enum[now,today,tomorrow] = now` | weather, rain, temperature, forecast, outside, umbrella | Open-Meteo public API (no key) using configured lat/lon. |
 | `get_calendar` | `days_ahead: integer = 1` | calendar, events, schedule, appointments, agenda, meeting | CalDAV via `caldav` lib, read events in window. Not configured → `ok=False` message. |
-| `add_calendar_event` | `title`, `start: ISO8601`, `end: ISO8601?`, `description?` | calendar, add, create, event, appointment, schedule, book | Creates event via CalDAV. |
+| `add_calendar_event` | `title`, `start: ISO8601`, `end: ISO8601?`, `description?` | calendar, add, create, event, appointment, schedule, book | Creates event via CalDAV (off the event loop). Times carrying an offset are converted to UTC; times without one are the daemon's local time. Text fields are escaped (RFC 5545) so they cannot add properties. |
 
 ### 6.5 `comms_tools.py` — service: `ctx.services["sip"]`
 
 | name | params | keywords | behaviour |
 |---|---|---|---|
 | `place_call` | `message: string` | call, phone, ring, dial, urgent, reach | Instructs the SIP plugin to dial the user's configured SIP URI, speak `message` via TTS, then listen (§7.5). Returns immediately with `"Call initiated."`; the user's spoken reply arrives later as a new event. |
-| `fetch_page` | `url: string`, `raw_html: boolean?`, `timeout_s: integer?` | browse, web, page, url, fetch, site, website, internet, lookup, scrape, html | Renders a **public** http(s) page with a headless Chromium (JavaScript runs) and returns its visible text, capped at 6000 chars and prefixed with an untrusted-data banner. `raw_html` returns the DOM instead. Runs as the sandbox user through the §15 runner in a throwaway profile — never as the daemon uid. Every resolved address must be global: private, loopback and link-local targets are refused before launch (the daemon shares a link with Home Assistant, the dashboard and the updater hook), and the vetted address is pinned via `--host-resolver-rules` so DNS rebinding cannot redirect the fetch. Chromium is an external binary, so this adds **no** dependency under §12. |
-| `browser` | `action: enum[open, read, click, type, select, key, scroll, back, forward, close]`, `url: string?`, `ref: integer?`, `text: string?`, `submit: boolean?`, `clear: boolean?`, `key: enum?`, `direction: enum[down, up]?` | browser, browse, web, click, form, login, site, website, page | (v1.16, core) Drives ONE persistent headless Chromium session (`browser_session.py`) shared with the dashboard live view. The page stays open between calls; the profile (cookies, logins) lives in `ares-browser`'s home and survives restarts. Every action returns a snapshot — URL, title, visible text with interactive elements tagged `[n]`, capped at 8000 chars, under an untrusted-data banner; password field values are never reported. Input is DevTools mouse/keyboard events; a covered element falls back to a JS click. Every connection goes through the in-daemon egress proxy (`browser_proxy.py`): host resolved by the proxy, any non-global answer or a port outside 80/443/8080/8443 refused, connection made only to the vetted address; `--proxy-bypass-list=<-loopback>`, `--disable-quic` and `disable_non_proxied_udp` WebRTC keep traffic on it. DevTools over `--remote-debugging-pipe`; downloads denied; each DevTools command times out (20 s) and each action is capped at 60 s so a hung page cannot wedge the worker. Launch: prod `sudo -n -u {browser_user} /usr/local/sbin/ares-browser-runner {fixed template}`; prod refuses if `browser_user` is empty, the daemon uid, or the `run_shell` sandbox user. Refuses while the operator has control (§17). Closes after `session_idle_close_s` idle (profile kept); session-only cookies do not survive a close. Not available to subagents (§20.2). |
 | `end_call` | `farewell: string?` | hang up, hangup, end call, goodbye, bye, disconnect | Hangs up the call in progress (§7.5). `farewell` is spoken in full first, then the line drops; the session's active channel is moved off `SIP_CALL` so the final assistant turn does not fail over to PUSH. Refuses when no call is active. |
 | `send_sip_message` | `message: string` | sip, text, message, send, sms | SIP MESSAGE to the user's URI. |
+
+### 6.6 `browser_tools.py` + `browser_tool.py` — web access
+
+Both tools are `core = True` (§5) and are registered only when the `browser`
+plugin is enabled; `browser` additionally needs `browser_user` in prod.
+`fetch_page` is a stateless one-shot read; `browser` is one persistent session
+shared with the dashboard's live view (§17).
+
+| name | params | keywords | behaviour |
+|---|---|---|---|
+| `fetch_page` | `url: string`, `raw_html: boolean?`, `timeout_s: integer?` | browse, web, page, url, fetch, site, website, internet, lookup, scrape, html | Renders a **public** http(s) page with a headless Chromium (JavaScript runs) and returns its visible text, capped at 6000 chars and prefixed with an untrusted-data banner. `raw_html` returns the DOM instead. Runs as the sandbox user through the §15 runner in a throwaway profile — never as the daemon uid. The URL is vetted up front (every resolved address global, a web port) so the model gets a clear refusal, and then every connection the page makes — subresources, redirects, scripts — goes through a per-call egress proxy (`browser_proxy.py`, below) that repeats that vetting and connects only to the address it vetted; the daemon shares a link with Home Assistant, the dashboard and the updater hook, and DNS rebinding cannot swap an internal host in after the check. Chromium is an external binary, so this adds **no** dependency under §12. |
+| `browser` | `action: enum[open, read, click, type, select, key, scroll, back, forward, close]`, `url: string?`, `ref: integer?`, `text: string?`, `submit: boolean?`, `clear: boolean?`, `key: enum?`, `direction: enum[down, up]?` | browser, browse, web, click, form, login, site, website, page | (v1.16, core) Drives ONE persistent headless Chromium session (`browser_session.py`) shared with the dashboard live view. The page stays open between calls; the profile (cookies, logins) lives in `ares-browser`'s home and survives restarts. Every action returns a snapshot — URL, title, visible text with interactive elements tagged `[n]`, capped at 8000 chars, under an untrusted-data banner; password field values are never reported. Input is DevTools mouse/keyboard events; a covered element falls back to a JS click. Every connection goes through the in-daemon egress proxy (`browser_proxy.py`): host resolved by the proxy, any non-global answer or a port outside 80/443/8080/8443 refused, connection made only to the vetted address; `--proxy-bypass-list=<-loopback>`, `--disable-quic` and `disable_non_proxied_udp` WebRTC keep traffic on it. DevTools over `--remote-debugging-pipe`; downloads denied; each DevTools command times out (20 s) and each action is capped at 60 s so a hung page cannot wedge the worker. Launch: prod `sudo -n -u {browser_user} /usr/local/sbin/ares-browser-runner {fixed template}`; prod refuses if `browser_user` is empty, the daemon uid, or the `run_shell` sandbox user. Refuses while the operator has control (§17). Closes after `session_idle_close_s` idle (profile kept); session-only cookies do not survive a close. Not available to subagents (§20.2). |
+
+**Egress proxy (`browser_proxy.py`).** A page opens connections the daemon never
+sees as a URL, so neither tool trusts per-URL vetting alone. Chromium is started
+with `--proxy-server=http://127.0.0.1:<port>`, `--proxy-bypass-list=<-loopback>`
+(removing Chromium's implicit localhost bypass), `--disable-quic` and
+`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`, so every connection
+reaches the in-daemon proxy. The proxy speaks just enough HTTP/1.1 for a browser —
+`CONNECT host:port` for TLS/WebSockets and absolute-URI requests for plain http —
+and for each connection: refuses a port outside 80/443/8080/8443; resolves the
+host itself and refuses the whole name if **any** answer is non-global; then
+connects only to an address it vetted, so a rebinding answer cannot be swapped in
+after the check. It caps open connections (128, beyond which it answers 503) and
+closes a tunnel idle for 600 s, because it runs inside the daemon process and a
+hostile page must not be able to exhaust its file descriptors. Stdlib only.
 
 ---
 
@@ -1054,6 +929,7 @@ correct: bad config should never half-run.
   `payload={"text": line}`. Line starting with `!high ` → HIGH. `!quit` stops
   the daemon.
 - `ConsoleChannel(type=CONSOLE)`: prints `ARES> {message}`. Always returns True.
+  Registered unless `plugins.console_channel.enabled` is `false`.
 
 ### 7.2 `sources/scheduler.py`
 
@@ -1149,7 +1025,9 @@ device):
 configured default room), synthesises with Piper (subprocess `piper --model ...`
 producing WAV), plays via `sounddevice` on that room's output device. While TTS
 is playing in a room, that room's VAD is muted (shared per-room `asyncio.Event`
-exposed by the voice plugin) to stop ARES hearing itself.
+exposed by the voice plugin) to stop ARES hearing itself. `broadcast(message)`
+synthesises once and plays in **every** room (each muted while it plays); one
+failing room does not stop the others. It is used by the safety handlers (§7.7).
 
 ### 7.5 `plugins/sip/` + sip channels
 
@@ -1184,13 +1062,21 @@ idle listening never clips a caller who pauses before answering.
 
 `sip/source.py` (`SIPSource`, name `sip`):
 
-- Incoming SIP MESSAGE → event `type="sip_message"`, NORMAL,
-  `payload={"text", "from_uri"}`.
+- Incoming SIP MESSAGE from a configured user URI → event `type="sip_message"`,
+  NORMAL, `payload={"text", "from_uri"}`, `user_id` = the matching user. A
+  message from any other sender is dropped and logged — it would otherwise
+  become a user turn.
 - Incoming call from the configured user URI: answer, play greeting via Piper,
   then loop: record until 700 ms silence (or timeout as configured) → Whisper → emit
   `type="call_speech"`, NORMAL. TTS replies stream back into the call via the
   `SIPCallChannel` while the call is up. Hang-up ends the loop.
-- Calls from unknown URIs: reject, log.
+- Calls from unknown URIs: reject (603), log.
+
+Caller matching (`sip/uri.py`) compares **addresses only**: the From header is
+reduced to `user@host` — the bracketed URI when present, scheme, port,
+parameters and headers stripped, host lowercased — and must equal a configured
+user URI reduced the same way. It never substring-matches the raw header,
+because the display name is caller-controlled (`"sip:me@host" <sip:eve@evil>`).
 
 `SIPMessageChannel(type=SIP_MESSAGE)`: `send_message(user_uri, text)`.
 `SIPCallChannel(type=SIP_CALL)`: delivers into the active call; returns False
@@ -1211,11 +1097,25 @@ Two handlers, registered when the plugin is enabled:
 
 - `FireHandler`: matches `state_change` events whose entity matches the
   configured smoke/fire entity globs and new state is `on`/`triggered`.
-  Action: TTS broadcast of a fixed phrase to **all** voice rooms, push
-  notification, SIP call attempt if user away, create `monitoring` task.
 - `IntruderHandler`: same pattern for alarm entities.
 
-All actions inside are direct channel/service calls — no LLM, no tools.
+Each runs the same fixed sequence with its own phrase, and every step is
+independently guarded so one failing path cannot stop the rest:
+
+1. push notification via `router.notify`;
+2. announce the phrase through every entry in `services["announcers"]` — a list
+   of `async (phrase) -> bool` callables `main.py` fills from the enabled
+   channels: the speaker channel's unconditional `announce` (§4.5) and the voice
+   channel's `broadcast` to **all** rooms (§7.4). Neither consults presence: in an
+   emergency the house is told regardless;
+3. if the user has a SIP URI, `services["presence"]` (the speaker channel's
+   `anyone_home`) does not report someone home, and SIP is wired, place a call
+   that speaks the phrase (`call_and_speak(uri, phrase, listen=False)`);
+4. create a `monitoring` task naming the entity.
+
+All actions inside are direct channel/service calls — no LLM, no tools. The
+handlers get their collaborators only through `services`, so the critical plugin
+imports no other plugin.
 
 ---
 
@@ -1250,6 +1150,12 @@ memory:
 
 tasks:
   db_path: instance/tasks/tasks.db
+
+trace:                               # live activity trace (§4.14)
+  enabled: true
+  path: /var/lib/ares/trace/trace.jsonl
+  max_mb: 100                        # rotate at this size
+  backups: 3                         # rotated files kept
 
 users:
   primary:
@@ -1286,6 +1192,15 @@ plugins:
         priority: HIGH
     entity_rooms:
       binary_sensor.kitchen_motion: kitchen
+  speaker:                             # SPEAKER channel (§4.5); needs home_assistant
+    enabled: false
+    presence_entities: [person.primary]  # any reading `home` = someone is home
+    tts_domain: tts                    # modern tts.speak: service_entity is the engine,
+    tts_service: speak                 #   service_data names the media player;
+    service_entity: tts.piper          # legacy tts.<engine>_say: service_entity is the
+    service_data:                      #   media player and service_data is {}
+      media_player_entity_id: media_player.living_room
+    tts_field: message                 # field the TTS service reads the text from
   voice:
     enabled: false
     whisper_model: small
@@ -1462,8 +1377,8 @@ with working Approve/Deny buttons that flip DB status; health endpoint returns
 queue depths. Path-escape on `/api/memory/file` rejected.
 
 **M12 — Self-edit → PR.** `selfedit_tools.py`. *Accept (against a real test
-repo):* `open_pr` creates a branch, commits given files into the scratch clone
-only, pushes, and opens a PR; `/opt/ares` (or its dev stand-in) is never
+repo):* `open_pr` creates a new branch and commit through the GitHub Git-Data API
+(no local clone) and opens a PR; `/opt/ares` (or its dev stand-in) is never
 written; `get_pr_status` reports state; path-escape in `files` rejected; PR
 appears in `/api/prs`. Verify with branch protection on that ARES cannot merge.
 
@@ -1546,7 +1461,65 @@ Optional extras in `pyproject.toml`:
 Self-edit and updater use `git` (system binary) and the GitHub REST API over
 the already-present `httpx`; no GitHub SDK. The **broker and updater use only
 the Python standard library** (they run at higher privilege — no third-party
-attack surface). Piper is an external binary; grep and git are system binaries.
+attack surface). Piper and Chromium (§6.6) are external binaries; grep and git are
+system binaries.
+
+---
+
+## 13. Glossary of Non-Obvious Decisions (context for the implementer)
+
+- **Why the router, not the LLM, picks the channel:** the LLM would need
+  live routing state on every call; instead `speak` is transport-blind and the
+  router reads the session at delivery time. This is also why voice room
+  resolution happens inside the voice channel.
+- **Why tool discovery resets per cycle:** keeps token cost flat and prevents
+  context bloat over long-running operation. Tasks and memory carry the
+  durable state instead.
+- **Why LOW events are dropped when busy:** LOW means "nice to know"; queuing
+  them creates stale backlogs after busy periods.
+- **Why HIGH doesn't interrupt in v1:** cancellation of an in-flight tool loop
+  safely (mid device control, mid memory write) needs compensation logic that
+  isn't worth it yet. Front-of-queue is enough.
+- **Why sessions are in-memory only:** they are ephemeral routing/history
+  state; durable continuity is the job of tasks and memory, which survive
+  restarts by design.
+- **Why the fixed IGNORE convention (§4.11):** gives the agent an explicit,
+  loggable way to decline ambient events instead of hallucinating a speak call.
+- **Why the broker is a separate root process, not sudo from ARES:** giving the
+  `ares` user any sudo entry — even a narrow one — makes the daemon's whole
+  attack surface a path to root. Instead ARES (unprivileged) can only *write a
+  row*; a tiny, auditable, stdlib-only root process executes only rows that are
+  both human-approved and regex-allowlisted. Compromising ARES yields a request
+  queue, not a root shell.
+- **Why self-edits go through a PR the operator merges, never auto-applied:**
+  the security model's foundation is that ARES cannot change the code it runs.
+  A PR is a proposal; branch protection makes the human merge the only path to
+  `main`; the updater then deploys only `main`. There is deliberately no code
+  path from ARES's reasoning to running modified code without a human in between.
+- **Why the shell always runs as `ares-sbx`, never `ares`:** the daemon holds
+  the (env-injected) secrets and the readable config; a command running as that
+  same user could exfiltrate them. Dropping to a secret-less, RO-code sandbox
+  user means arbitrary command execution can't reach secrets or live code.
+- **Why broker/updater are stdlib-only and never import `ares`:** they run at
+  higher privilege than the daemon. Keeping them tiny, dependency-free, and
+  independent means a supply-chain issue in ARES's dependency tree can't touch
+  the privileged components, and they can be audited in isolation.
+- **Why `ARES_ENV=prod` has hard tripwires:** the entire security model is
+  invisible at runtime if the users/permissions aren't set up — everything
+  "works" running as one user. Failing fast on a readable `.env` or missing
+  sandbox user turns a silent security collapse into a loud startup error.
+
+- **Why a subagent is a task row, not a new store (§20):** durability,
+  prompt visibility and dashboard rendering all already exist for tasks. A
+  second store would duplicate three mechanisms to hold one dict.
+- **Why the subagent toolset is an allowlist, not a deny-list (§20.2):** a
+  deny-list silently grants every tool added later. The failure mode of an
+  allowlist is a subagent that cannot do something; the failure mode of a
+  deny-list is an unattended loop that can place calls.
+- **Why subagents cannot speak:** if a background run could talk to the user,
+  a poisoned web page could make ARES say or send something with nobody in the
+  conversation. Reports come back as data on the bus and the main agent — which
+  is talking to a real person — decides what, if anything, to relay.
 
 ---
 
@@ -1563,8 +1536,8 @@ and never assumes more privilege than it has.
 | User | Runs | Can read | Can write | sudo |
 |---|---|---|---|---|
 | `ares` | the ARES daemon (`ares.service`) | `/opt/ares/app` (RO), `/var/lib/ares` | `/var/lib/ares` only | **none** |
-| `ares-sbx` | sandboxed shells & the scratch clone | its own `$HOME` | its own `$HOME` only | **none** |
-| `ares-browser` | the persistent browser (§6.1) | its own `$HOME` (the login profile) | its own `$HOME` only | **none** |
+| `ares-sbx` | sandboxed shells and `fetch_page` | its own `$HOME` | its own `$HOME` only | **none** |
+| `ares-browser` | the persistent browser (§6.6) | its own `$HOME` (the login profile) | its own `$HOME` only | **none** |
 | `ares-deploy` | update listener (`ares-updater.service`) | `/opt/ares` | `/opt/ares` | restart ares unit only |
 | `root` | the broker (`ares-broker.service`) | everything | everything | n/a |
 
@@ -1582,7 +1555,7 @@ and never assumes more privilege than it has.
   falls back to a dotenv file in dev (§14.4).
 - **`/var/lib/ares/`** — all mutable state: `tasks.db`, `privq.db`, `memory/`,
   logs, snapshot temp. Owned `ares:ares`, `0700`.
-- **`/home/ares-sbx/`** — sandbox home + scratch clone. Owned `ares-sbx`.
+- **`/home/ares-sbx/`** — sandbox home (shell workdir). Owned `ares-sbx`.
   The `ares` daemon can traverse in to spawn processes as `ares-sbx` via the
   broker/runner (§15) but does not own it.
 - **`/home/ares-browser/`** — the persistent browser's profile (logged-in
@@ -1594,9 +1567,11 @@ and never assumes more privilege than it has.
 
 - Memory / tasks / privilege queue → `/var/lib/ares` (daemon writable). OK.
 - Shell tool → executes **as `ares-sbx`**, never as `ares`. §15.
+- Page fetch → executes **as `ares-sbx`** in a throwaway profile; its egress is
+  limited to public web addresses by a per-call proxy. §6.6.
 - Stateful browser → executes **as `ares-browser`**, never as `ares` or
   `ares-sbx`; its egress is limited to public web addresses by the daemon's
-  proxy. §6.1.
+  proxy. §6.6.
 - Self-edit → **API-only from the daemon** (GitHub Git-Data API); no local
   clone, no sandbox, token never on disk. Produces a PR on a new branch; never
   writes `/opt/ares` and never pushes the base branch. §18.
@@ -1774,11 +1749,12 @@ no websockets.
   `payload={"text"}`; the session channel flips to WEB (§4.6), so the reply
   routes back to the browser.
 
-### 17.2 API routes (all require the bearer token except `/` and static)
+### 17.2 API routes (all require the bearer token except `/`, `/api/version` and static)
 
 ```
 GET  /                       -> static/index.html
-POST /api/chat               {text}          -> 202, emits web_message
+GET  /api/version                            -> {sha, short} deployed commit (no auth; shown on the lock screen)
+POST /api/chat               {text}          -> 202, emits web_message (400 without text)
 GET  /api/chat/poll          ?since=<seq>     -> long-poll (≤25 s); {messages, cursor}
 GET  /api/memory/list                        -> memory.list()
 GET  /api/memory/file        ?path=          -> memory.read() (path-safe; RO)
@@ -1790,8 +1766,9 @@ POST /api/privileges/{id}/approve            -> PrivStore.approve  (operator gat
 POST /api/privileges/{id}/deny               -> PrivStore.deny
 GET  /api/prs                                 -> open self-edit PRs (§18 cache)
 GET  /api/health                             -> {ok, uptime, queue depths}
+GET  /api/trace              ?offset=<byte>   -> {records, offset, available, rotated}: tail of the activity trace (§4.14)
 GET  /api/browser/state                      -> {running, url, title, operator_in_control, frame_seq}
-POST /api/browser/launch                     -> start the persistent browser (§6.1)
+POST /api/browser/launch                     -> start the persistent browser (§6.6)
 POST /api/browser/close                      -> close it (profile kept)
 GET  /api/browser/frame      ?since=<seq>    -> long-poll (≤10 s); {frame: {seq, data(jpeg b64), width, height}|null, state}
 POST /api/browser/control    {active}        -> operator takes / hands back control
@@ -1809,8 +1786,9 @@ construction; no business logic in the API layer.
 
 ### 17.3 `static/index.html`
 
-One self-contained file (a Preact app inlined from source via a build step; no
-external CDN). Tabs: Chat (cursor-based long-poll, cursor persisted in
+One self-contained file, built from `frontend/` by `frontend/build.py` (a Preact
+app via htm, inlined; no external CDN). Model-written memory is rendered as
+escaped markdown whose links allow only http(s)/mailto. Tabs: Chat (cursor-based long-poll, cursor persisted in
 `localStorage`), Trace, Memory (list + file view), Tasks, Subagents (recent
 background runs, §20), Browser (live view of the persistent browser with
 launch/close, URL bar, click/scroll/typing on the image, a hidden-by-default
@@ -1862,7 +1840,7 @@ open_pr(branch: string, title: string, body: string,
   keywords: code, edit, self, pr, pull, request, patch, improve, fix, propose
 ```
 
-Behaviour (v1.2/PATCH-3 — **entirely API-driven in the daemon; no local git
+Behaviour (v1.2 — **entirely API-driven in the daemon; no local git
 clone and no sandbox exec**, so the token never touches disk or `ares-sbx`, and
 the daemon only ever creates a *new* branch + PR, never the base ref):
 
@@ -1938,6 +1916,9 @@ Update action (serialised with a lock so webhook+poll can't collide):
 4. `restart_cmd` (the one sudoers entry `ares-deploy` holds: restart `ares`).
 5. Write the deployed SHA to `/opt/ares/RELEASED_SHA` and log.
 
+A SHA that is not 7–40 lowercase hex characters is refused before step 1: it
+becomes a git argv element and a directory name.
+
 Because merge-to-`main` is the human gate (§18), this listener only ever runs
 operator-approved code. It never pulls arbitrary branches.
 
@@ -2011,7 +1992,7 @@ keeps `run_shell` for supervised, in-conversation use.
 ### 20.3 Reporting back
 
 * `subagent_progress` — LOW, payload `{run_id, title, note}`. LOW events are
-  dropped when the user's queue is busy (§13), which is the correct behaviour
+  dropped when the user's queue is busy (§4.3), which is the correct behaviour
   for progress: it informs when ARES is idle and never builds a backlog.
 * `subagent_done` — NORMAL, payload
   `{run_id, title, objective, status, result, iterations, duration_s}`.
@@ -2040,59 +2021,241 @@ retrieves one report; `cancel_subagent` stops a run.
 
 ---
 
-## 13. Glossary of Non-Obvious Decisions (context for the implementer)
+## Appendix A. Version History
 
-- **Why the router, not the LLM, picks the channel:** the LLM would need
-  live routing state on every call; instead `speak` is transport-blind and the
-  router reads the session at delivery time. This is also why voice room
-  resolution happens inside the voice channel.
-- **Why tool discovery resets per cycle:** keeps token cost flat and prevents
-  context bloat over long-running operation. Tasks and memory carry the
-  durable state instead.
-- **Why LOW events are dropped when busy:** LOW means "nice to know"; queuing
-  them creates stale backlogs after busy periods.
-- **Why HIGH doesn't interrupt in v1:** cancellation of an in-flight tool loop
-  safely (mid device control, mid memory write) needs compensation logic that
-  isn't worth it yet. Front-of-queue is enough.
-- **Why sessions are in-memory only:** they are ephemeral routing/history
-  state; durable continuity is the job of tasks and memory, which survive
-  restarts by design.
-- **Why the fixed IGNORE convention (§4.11):** gives the agent an explicit,
-  loggable way to decline ambient events instead of hallucinating a speak call.
-- **Why the broker is a separate root process, not sudo from ARES:** giving the
-  `ares` user any sudo entry — even a narrow one — makes the daemon's whole
-  attack surface a path to root. Instead ARES (unprivileged) can only *write a
-  row*; a tiny, auditable, stdlib-only root process executes only rows that are
-  both human-approved and regex-allowlisted. Compromising ARES yields a request
-  queue, not a root shell.
-- **Why self-edits go through a PR the operator merges, never auto-applied:**
-  the security model's foundation is that ARES cannot change the code it runs.
-  A PR is a proposal; branch protection makes the human merge the only path to
-  `main`; the updater then deploys only `main`. There is deliberately no code
-  path from ARES's reasoning to running modified code without a human in between.
-- **Why the shell always runs as `ares-sbx`, never `ares`:** the daemon holds
-  the (env-injected) secrets and the readable config; a command running as that
-  same user could exfiltrate them. Dropping to a secret-less, RO-code sandbox
-  user means arbitrary command execution can't reach secrets or live code.
-- **Why broker/updater are stdlib-only and never import `ares`:** they run at
-  higher privilege than the daemon. Keeping them tiny, dependency-free, and
-  independent means a supply-chain issue in ARES's dependency tree can't touch
-  the privileged components, and they can be audited in isolation.
-- **Why `ARES_ENV=prod` has hard tripwires:** the entire security model is
-  invisible at runtime if the users/permissions aren't set up — everything
-  "works" running as one user. Failing fast on a readable `.env` or missing
-  sandbox user turns a silent security collapse into a loud startup error.
+Each revision's change and the reason for it, oldest first. The body of the
+specification above is always current; this appendix is context, not a second
+source of requirements.
 
-- **Why a subagent is a task row, not a new store (§20):** durability,
-  prompt visibility and dashboard rendering all already exist for tasks. A
-  second store would duplicate three mechanisms to hold one dict.
-- **Why the subagent toolset is an allowlist, not a deny-list (§20.2):** a
-  deny-list silently grants every tool added later. The failure mode of an
-  allowlist is a subagent that cannot do something; the failure mode of a
-  deny-list is an unattended loop that can place calls.
-- **Why subagents cannot speak:** if a background run could talk to the user,
-  a poisoned web page could make ARES say or send something with nobody in the
-  conversation. Reports come back as data on the bus and the main agent — which
-  is talking to a real person — decides what, if anything, to relay.
+v1.1 adds the deployment & self-modification layer: Firecracker microVM security
+model (§14), sandboxed shell (§15), privilege escalation queue + root broker (§16),
+web dashboard (§17), self-edit/PR workflow (§18), and the update listener (§19).
+
+v1.2 hardens the runtime system prompt against injection from tool/memory/
+external content (§4.11 carries the fixed RULES block; annotated version in
+ARES-SYSTEM-PROMPT.md) and adds the `websockets` dependency (§12) that makes the
+Home Assistant live event transport (§7.3) implementable.
+
+v1.3 adds the `read_source` self-inspection tool (§18): a read-only, daemon-side
+tool that lets ARES read its own source in the same repo-relative path space
+`open_pr` writes, so it can reason about what to change before proposing an edit.
+It surfaces the daemon's *existing* read-only access to `/opt/ares/app` (§14.2)
+to the model — it grants no new privilege, never leaves the source tree, and
+never reads the secrets file. No new dependency.
+
+v1.4 promotes the four **recall/store** memory tools (`memory_grep`,
+`memory_read`, `memory_list`, `memory_write`) from discoverable (§6.1) to **core /
+always-in-context** (§5), so ARES recalls and stores without first having to
+`search_tools` for the capability — enabling proactive memory use. The
+destructive `memory_delete` stays discoverable-only (§6.1). No new tool, no new
+dependency; this only changes which existing tools are always loaded.
+
+v1.5 makes the two Home Assistant tools actually able to control real devices
+(§6.3). `control_device` gains a `data: object?` param passed verbatim as the
+HA service's named fields — HA services take named parameters (`set_hvac_mode`
+needs `hvac_mode`, `set_fan_mode` needs `fan_mode`, …), which a single `value`
+string cannot express, so anything but `set_temperature` previously failed. It
+also reports the entity's resulting state instead of HA's raw array. `get_home_state`
+gains an `attributes: string[]?` param and now returns a single entity's **full**
+attribute set by default (so the model can see `hvac_modes`, `supported_features`,
+`current_temperature`, … and decide how to act); a domain listing stays state-only
+unless `attributes` is given. No new tool, no new dependency.
+
+v1.6 adds a **context guard** to the agent loop (§4.10) so a long/heavy tool loop
+can no longer push the assembled messages past the model's context window or let
+a provider silently truncate the system prompt. `LLMConfig` gains `context_window`
+(the input-token budget) and `max_tokens` (per-call output cap, sent as OpenAI
+`max_tokens` and reserved from the window). Before every LLM call the agent fits
+`messages` to that budget with a cheap char/4 token estimate (no tokenizer dep):
+messages[0] (the system prompt + RULES) is **never** trimmed — the guard drops
+oldest non-system messages and never leaves an orphan `tool` result. Each tool
+result is capped (~1/8 of the window) so one dump can't dominate, and a compact
+`RULES_REMINDER` (fixed code constant, never config) is reinjected every 20 tool
+iterations and before the forced-final turn. No new dependency.
+
+v1.7 fixes in-call turn-taking (§7.5) and adds two ways to stop noise reaching
+the agent. On a call, the listener and the reply shared one pjsua2 thread, so a
+reply queued behind a recording pass that had opened the instant the previous
+transcript was emitted and was only capturing the caller listening — the caller
+waited out the whole `record_seconds` cap for every answer. Deciding to speak (or
+hanging up) now aborts the pass in flight, no pass is opened while ARES has the
+floor, and the cap runs from first speech rather than from pass open. A pass that
+heard no speech is no longer transcribed at all: Whisper turns near-silence into
+stock phrases ("you"), and each phantom transcript spent a full serialized agent
+cycle ahead of the caller's real words. STT gains `vad_filter` / no
+`condition_on_previous_text`. New tool `end_call` (§6.5) lets ARES hang up, with
+an optional farewell spoken before the line drops. On the Home Assistant side,
+§7.3 gains a `blocked_entities` deny-list of `entity_id` globs, applied ahead of
+both allow-lists — a chatty integration usually sits inside a domain that is
+otherwise wanted. No new dependency.
+
+v1.8 adds `fetch_page` (§6.6): a headless-browser page fetch, and promotes it and
+`run_shell` into the always-loaded core set (§5, now twelve tools). Chromium is
+driven as an **external binary** exactly as §12 already sanctions for Piper, grep
+and git, so **no Python dependency is added** and §12 stands unamended. A browser
+is the largest untrusted-input surface in the system, so the risk is handled in
+code rather than left to the model: it executes only as the sandbox user through
+the single §15 runner, in a throwaway profile discarded after each fetch; every
+resolved address must be global, so the host-private link (Home Assistant, the
+dashboard, the updater hook), loopback and link-local are refused *before*
+Chromium starts; the vetted address is then pinned with `--host-resolver-rules`
+so a rebinding DNS answer cannot swap it; and the URL is shell-quoted into a
+fixed argv. Returned text is capped and banner-labelled as untrusted data, which
+the frozen RULES already classes as non-instruction.
+
+v1.9 gives `monitoring` tasks a real clock (§7.2). They previously had none: the
+scheduler only ever fired `reminder_pending`, so a monitoring task was a passive
+note that the agent reconsidered only when some unrelated event woke it — the live
+trace measured a task promising "every 30 minutes" receiving exactly one check in
+nine hours, while the agent told the user it would keep checking and notify them.
+`create_task` gains `check_every_minutes`, which arms `data.check_interval_s` /
+`data.next_check_at` (stored in the existing `data` blob, so no schema change), and
+the 60 s scheduler pass emits a re-arming NORMAL `task_check` for each armed task
+that is due. `due_at` bounds the watch and the last check is flagged `final`.
+Unarmed tasks behave exactly as before, and `create_task` now says so explicitly
+when a monitoring task is created without a timer, so the agent stops promising a
+cadence nothing backs.
+
+v1.10 adds **background subagents** (§20, F25): bounded autonomous runs the agent
+starts for work too long to do inline, which report back on the event bus while
+the main loop stays free. A run IS a `multi_step` task row carrying a `subagent`
+block, so durability, prompt visibility and dashboard rendering all reuse the
+task store rather than inventing a parallel one (§20.1). Its toolset is a fixed
+code-constant **allowlist** (§20.2) — read-only, `run_shell` deliberately
+excluded, because an unattended loop reading fetched web pages is precisely the
+combination §14 exists to prevent. Reports arrive as `subagent_done` / 
+`subagent_progress` events from a room-only source, so a completion never hijacks
+the active channel and is rendered as fenced `[EVENT ...]` data (§20.3). No new
+dependency.
+
+v1.11 makes the agent actually *reach* for §20 unprompted, by adding two bullets
+to the frozen RULES block (§4.11). Four days of live trace after v1.10 shipped
+recorded `spawn_subagent` being called **zero** times while the main loop made 28
+inline `fetch_page` calls — ten inside a single cycle, holding the household's one
+serialized queue for 116 s. The tool was always reachable (`core: true`) and its
+own description already said to prefer it over a long inline investigation, which
+is the finding: a tool description is not a behavioural trigger, because the model
+picks its approach at the start of a turn and is committed long before the third
+fetch. Standing turn-start behaviour belongs in RULES. The second bullet closes
+the return path — a finished run arrives as an ambient event, and every ambient
+event in that same window ended in `IGNORE`, so without it the answer the person
+waited for is silently swallowed. No new tool, no new dependency, no interface
+change; this only changes what the agent is told.
+
+v1.12 fixes a delivery bug in §4.10 step 8: a substantive final answer was
+silently dropped whenever the model had already called `speak` once in the turn —
+even if that `speak` was only an acknowledgement ("On it, checking now") and the
+real answer lived in the final assistant message. Live trace showed the failure
+repeatedly (a gate lookup where the caller heard "checking now" and never got
+"Gate C6"; a terminal lookup; an AC-set confirmation). Step 8 now also delivers
+the final message after a `speak` when `utils.text.unspoken_final` judges it a
+dropped answer rather than a note-to-self: it must be at least as long as
+everything already spoken (an answer after a brief ack, not a shorter summary of
+a full spoken reply), carry more than filler, and not merely restate what was
+spoken. Across two months of trace this delivers 7 previously-lost answers and
+leaks none of the internal status notes it must not speak. No new tool, no new
+dependency; `agent.py` stays within the 400-line limit by housing the decision in
+`utils.text`.
+
+v1.13 makes delivery presence-aware (§4.5). The `WEB` channel used to accept
+every `speak` into an in-memory outbox and return `True` even when no browser
+was polling, so a reply spoken while the user was away from the dashboard was
+lost to a queue no one drained — "speaking to no one." `WebChannel.deliver` now
+returns `False` unless a long-poll is actually connected (presence is the count
+of in-flight polls, plus a short grace between consecutive polls — a "polled
+recently" window proved too loose on mobile, where a backgrounded tab looked
+present but received nothing), letting the router fall through. A new optional `SPEAKER` channel sits
+ahead of `PUSH` in the `speak` fallback: when a configured presence entity
+(`person.*`) reads `home`, it announces the message aloud on a Home Assistant
+speaker via TTS (a generic `tts` service call configured to fit either the
+modern `tts.speak` shape or a legacy `tts.<engine>_say`); when no one is home it
+declines and delivery continues to `PUSH` (the phone). The speaker plugin
+receives the HA service by injection
+(no plugin-to-plugin import) and is wired only when Home Assistant is enabled
+and a `speaker` config block is present. No new tool, no new dependency.
+
+v1.14 corrects the v1.13 web-presence signal (§4.5). v1.13 judged the dashboard
+"present" if it had long-polled within 60s; a live trace caught the failure that
+exposes — a user out of the house asked a question on the web dashboard, got a
+correct answer in 18s, and never received it. Their mobile tab was backgrounded:
+still inside the 60s window (so the router committed the reply to the web outbox
+and did **not** fall through to push) but with no live connection to drain it, so
+the answer was consumed by a dead poll and lost, reaching neither web nor phone.
+Presence is now the count of **in-flight** long-polls (plus a short grace that
+bridges the gap between consecutive polls), so a backgrounded or closed session
+is correctly treated as absent and the reply falls through to speaker/push. The
+poll endpoint brackets its wait with `poll_started`/`poll_finished` (the close
+runs even on client disconnect). Backend-only; no new tool or dependency. A
+residual mobile race remains — a reply delivered into a still-open but suspended
+connection can be dropped — which needs cursor-based replay (the `since`
+parameter, still stubbed) to fully close; tracked as future work.
+
+v1.15 closes that residual race and refreshes the dashboard (§4.5, §17). The
+`WEB` channel is now a **replayable buffer**: every delivered reply is appended
+with a monotonic sequence number (bounded ring buffer), and `deliver` returns
+whether a browser is present *now* (unchanged router semantics) while always
+recording the reply. `/api/chat/poll` becomes cursor-based — the browser polls
+from the last sequence it saw (the `since` parameter, now live and persisted in
+`localStorage`) and the endpoint returns everything after it plus the new
+cursor. A reply committed to a poll that never reaches a frozen tab is therefore
+no longer lost: on reconnect the tab re-polls from its cursor and catches up (a
+`since` ahead of the server's counter, e.g. after a restart, triggers a full
+resync). Two dashboard additions surface current capabilities: `/api/status`
+reports where a reply would land right now (web presence, the router's
+`last_channel`, and whether anyone is home) as a header badge, and
+`/api/subagents` lists recent background runs (§20) — open plus recently closed,
+via `SubagentManager.list_all_runs` — as a new **Subagents** tab. Backend adds
+no dependency; the speaker channel's `anyone_home` is made public to feed the
+status badge; the frontend is rebuilt from source.
+
+v1.16 (operator-authorised) adds a **stateful browser** (§6.6): a core `browser`
+tool that drives one persistent Chromium session — the page stays open between
+calls and cookies/logins persist on disk across restarts — alongside the
+stateless `fetch_page`, which is unchanged. Every action (`open`, `read`,
+`click`, `type`, `select`, `key`, `scroll`, `back`, `forward`, `close`) returns a
+fresh untrusted-data snapshot in which interactive elements carry numbered refs
+the model acts on; input is real DevTools mouse/keyboard events. Because an
+interactive page opens connections the daemon never sees as a URL, the
+per-URL vetting of `fetch_page` is replaced by an in-daemon **egress proxy**
+that every browser connection is forced through (loopback bypass removed, QUIC
+and non-proxied WebRTC disabled): it resolves each host itself, refuses any
+non-global answer and any non-web port, and connects only to the address it
+vetted. DevTools runs over `--remote-debugging-pipe` (no debugging port).
+Downloads are denied. The logged-in profile makes the browser a credential
+store, so Chromium runs as a new dedicated **`ares-browser`** user (§14.1)
+through its own audited sudo runner — not the daemon uid, and not `ares-sbx`,
+since `run_shell` could otherwise read the cookies; prod refuses to launch
+without that separation. The dashboard gains a **Browser** tab (§17): a live
+view (screencast, streamed only while someone watches) where the operator can
+take control — above all to sign in themselves, so no password passes through
+the model; while the operator is in control the tool refuses, and control
+returns to ARES when handed back or after 10 idle minutes. The browser closes
+itself after 30 idle minutes (the profile is kept). Subagents do **not** get
+the browser (§20.2). The RULES block's SENSITIVE ACTIONS bullet (§4.11) now
+names acting in the browser as the person — submitting, buying, posting,
+sending, changing account settings — as sensitive. No new dependency (Chromium
+remains an external binary).
+
+v1.17 (operator-authorised) is a review-and-cleanup revision. `fetch_page`
+(§6.6) no longer relies on pinning the top-level address with
+`--host-resolver-rules`: subresources, redirects and scripts open connections that
+pin never covered. It now runs behind its own per-call egress proxy — the one the
+stateful browser already used — which also caps concurrent tunnels and closes
+idle ones. The safety-critical handlers (§7.7) now do what this spec always
+described: announce on every speaker and voice room, phone the user when no one is
+home, and open a `monitoring` task, each step isolated from the others' failures
+(they previously only pushed). SIP caller authorisation (§7.5) compares the From
+*address* rather than a substring of the raw header, whose display name the caller
+controls, and a SIP MESSAGE from an unknown sender is dropped instead of becoming a
+user turn. The dispatcher (§4.3) caps one agent turn at 900 s so a hung await can
+no longer wedge a user's queue silently; the LLM client (§4.9) retries HTTP 429.
+`add_calendar_event` (§6.4) converts times to UTC correctly. The dashboard's
+memory renderer escapes quotes and links only http(s)/mailto; the updater (§19)
+refuses a malformed SHA. Document structure: version history moved to this
+appendix; §13 returned to its numbered place; `fetch_page` and `browser` get their
+own §6.6; §3 regenerated from the tree; §4.14 documents the activity trace; §8
+gains the `trace` and `speaker` blocks; §17.2 lists `/api/version` and
+`/api/trace`; stale scratch-clone wording removed (self-edit has been API-only
+since v1.2). No new dependency; the RULES block is unchanged.
 
 *End of specification.*

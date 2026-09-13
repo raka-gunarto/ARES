@@ -1,4 +1,4 @@
-"""Tests for the sandboxed headless-browser tool (spec §6.1, §15).
+"""Tests for the sandboxed headless-browser tool (spec §6.6, §15).
 
 The security-relevant properties are the point of this file: a model-supplied
 URL must never reach an internal address, never break out of argv into a shell,

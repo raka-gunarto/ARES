@@ -1,4 +1,4 @@
-"""Tests for the SIP comms tools, focused on `end_call` (spec §6.1).
+"""Tests for the SIP comms tools, focused on `end_call` (spec §6.5).
 
 `end_call` is the one tool that tears down its own delivery channel, so the
 ordering it guarantees — farewell spoken in full, *then* hangup, then the
