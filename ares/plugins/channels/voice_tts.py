@@ -146,6 +146,35 @@ class VoiceTTSChannel(BaseChannel):
         sd.play(data, samplerate, device=output_device)
         sd.wait()
 
+    async def broadcast(self, message: str) -> bool:
+        """Speak `message` in every configured room (safety alerts, §7.7)."""
+        if not _HAVE_AUDIO or not self.rooms:
+            return False
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        wav_path = Path(tmp.name)
+        tmp.close()
+        played = False
+        try:
+            if not await self._synthesize(message, wav_path):
+                return False
+            for room, room_config in self.rooms.items():
+                ev = self.mute_events.get(room)
+                if ev is not None:
+                    ev.set()
+                try:
+                    await asyncio.to_thread(
+                        self._play_sync, wav_path, room_config.get("output_device")
+                    )
+                    played = True
+                except Exception:  # noqa: BLE001 - one dead room must not stop the rest
+                    logger.exception("voice_tts: broadcast failed in room %s", room)
+                finally:
+                    if ev is not None:
+                        ev.clear()
+            return played
+        finally:
+            wav_path.unlink(missing_ok=True)
+
     async def deliver(self, user_id: str, message: str, session: Session) -> bool:
         """
         Synthesize ``message`` with Piper and play it in the resolved room.

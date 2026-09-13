@@ -1,3 +1,18 @@
+"""Deterministic fire and intrusion handlers (spec §7.7).
+
+These bypass the LLM entirely: a smoke alarm must reach the household even if
+the model is slow, down, or has been talked out of it. Every action is a direct
+channel/service call, and each one is attempted independently — a failing
+speaker must never stop the phone call.
+
+Collaborators arrive through the `services` dict (plugins never import each
+other), all optional:
+
+* ``services["announcers"]`` — async callables ``(phrase) -> bool`` that say the
+  phrase out loud in the house (every voice room, the HA speaker);
+* ``services["presence"]`` — async ``() -> bool``, whether someone is home;
+* ``services["sip"]`` — the SIP service, for calling the user when away.
+"""
 from __future__ import annotations
 
 import fnmatch
@@ -14,203 +29,81 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-class FireHandler(BaseCriticalHandler):
-    """Handler for fire/smoke detection events."""
+class SafetyHandler(BaseCriticalHandler):
+    """Match alarm entities by glob; alert on every available path."""
 
-    def __init__(
-        self, fire_entities: list[str], tasks: TaskStore, services: dict
-    ) -> None:
-        """
-        Initialize the fire handler.
+    phrase = ""
+    title = ""
 
-        Args:
-            fire_entities: List of entity glob patterns to match (e.g. "binary_sensor.smoke_*").
-            tasks: Task store for creating monitoring tasks.
-            services: Dict of available services (voice, sip, etc.).
-        """
-        self.globs = fire_entities
+    def __init__(self, entities: list[str], tasks: TaskStore, services: dict) -> None:
+        """Store the entity globs, the task store and the injected services."""
+        self.globs = list(entities)
         self.tasks = tasks
         self.services = services
 
     def matches(self, event: Event) -> bool:
-        """
-        Check if this event is a fire/smoke detection.
-
-        Matches state_change events where the entity matches the configured
-        globs and the new state is 'on' or 'triggered'.
-
-        Args:
-            event: The event to check.
-
-        Returns:
-            True if this is a fire/smoke event, False otherwise.
-        """
+        """A `state_change` of a matching entity to `on`/`triggered`."""
         if event.type != "state_change":
             return False
-
         entity_id = event.payload.get("entity_id")
-        if not entity_id:
+        if not entity_id or not any(fnmatch.fnmatch(entity_id, g) for g in self.globs):
             return False
-
-        # Check if entity matches any of the configured globs
-        if not any(fnmatch.fnmatch(entity_id, glob) for glob in self.globs):
-            return False
-
-        # Check if new state is on/triggered
-        new_state = event.payload.get("new", {}).get("state")
-        return new_state in ("on", "triggered")
+        return (event.payload.get("new") or {}).get("state") in ("on", "triggered")
 
     async def handle(self, event: Event, router: ResponseRouter) -> None:
-        """
-        Handle a fire/smoke detection event deterministically.
-
-        Actions taken:
-        - Push notification to user
-        - Voice broadcast to all rooms (if voice service available)
-        - SIP call attempt (if sip service available)
-        - Create monitoring task
-
-        Args:
-            event: The fire/smoke detection event.
-            router: The response router for sending notifications.
-        """
+        """Push, announce in the house, call if away, open a monitoring task."""
+        name = type(self).__name__
         entity_id = event.payload.get("entity_id")
-        phrase = "Attention. Smoke or fire has been detected in the house."
+        log.warning("%s: %s triggered for %s", name, entity_id, event.user_id)
 
-        log.warning(
-            "FireHandler: fire/smoke detected on %s (CRITICAL, no LLM)", entity_id
-        )
-
-        # Push notification
         try:
-            await router.notify(event.user_id, phrase)
-        except Exception as e:
-            log.exception("FireHandler: notify failed: %s", e)
+            await router.notify(event.user_id, self.phrase)
+        except Exception:
+            log.exception("%s: notify failed", name)
 
-        # Voice broadcast to all rooms
-        voice = self.services.get("voice")
-        if voice and hasattr(voice, "broadcast"):
+        for announce in self.services.get("announcers") or []:
             try:
-                await voice.broadcast(phrase)
-            except Exception as e:
-                log.exception("FireHandler: voice broadcast failed: %s", e)
+                await announce(self.phrase)
+            except Exception:
+                log.exception("%s: announcement failed", name)
 
-        # SIP call attempt
-        sip = self.services.get("sip")
-        if sip and hasattr(sip, "place_call"):
-            try:
-                await sip.place_call(phrase)
-            except Exception as e:
-                log.exception("FireHandler: SIP call failed: %s", e)
+        await self._call_if_away(event.user_id, name)
 
-        # Create monitoring task
         try:
             await self.tasks.create(
-                event.user_id,
-                "monitoring",
-                title=f"Fire/smoke detected: {entity_id}",
-                detail=phrase,
+                event.user_id, "monitoring",
+                title=f"{self.title}: {entity_id}", detail=self.phrase,
             )
-        except Exception as e:
-            log.exception("FireHandler: task creation failed: %s", e)
+        except Exception:
+            log.exception("%s: task creation failed", name)
 
-
-class IntruderHandler(BaseCriticalHandler):
-    """Handler for alarm/intrusion detection events."""
-
-    def __init__(
-        self, alarm_entities: list[str], tasks: TaskStore, services: dict
-    ) -> None:
-        """
-        Initialize the intrusion handler.
-
-        Args:
-            alarm_entities: List of entity glob patterns to match (e.g. "alarm_control_panel.*").
-            tasks: Task store for creating monitoring tasks.
-            services: Dict of available services (voice, sip, etc.).
-        """
-        self.globs = alarm_entities
-        self.tasks = tasks
-        self.services = services
-
-    def matches(self, event: Event) -> bool:
-        """
-        Check if this event is an alarm/intrusion detection.
-
-        Matches state_change events where the entity matches the configured
-        globs and the new state is 'on' or 'triggered'.
-
-        Args:
-            event: The event to check.
-
-        Returns:
-            True if this is an alarm event, False otherwise.
-        """
-        if event.type != "state_change":
-            return False
-
-        entity_id = event.payload.get("entity_id")
-        if not entity_id:
-            return False
-
-        # Check if entity matches any of the configured globs
-        if not any(fnmatch.fnmatch(entity_id, glob) for glob in self.globs):
-            return False
-
-        # Check if new state is on/triggered
-        new_state = event.payload.get("new", {}).get("state")
-        return new_state in ("on", "triggered")
-
-    async def handle(self, event: Event, router: ResponseRouter) -> None:
-        """
-        Handle an alarm/intrusion detection event deterministically.
-
-        Actions taken:
-        - Push notification to user
-        - Voice broadcast to all rooms (if voice service available)
-        - SIP call attempt (if sip service available)
-        - Create monitoring task
-
-        Args:
-            event: The alarm detection event.
-            router: The response router for sending notifications.
-        """
-        entity_id = event.payload.get("entity_id")
-        phrase = "Attention. The alarm has been triggered."
-
-        log.warning(
-            "IntruderHandler: alarm triggered on %s (CRITICAL, no LLM)", entity_id
-        )
-
-        # Push notification
-        try:
-            await router.notify(event.user_id, phrase)
-        except Exception as e:
-            log.exception("IntruderHandler: notify failed: %s", e)
-
-        # Voice broadcast to all rooms
-        voice = self.services.get("voice")
-        if voice and hasattr(voice, "broadcast"):
-            try:
-                await voice.broadcast(phrase)
-            except Exception as e:
-                log.exception("IntruderHandler: voice broadcast failed: %s", e)
-
-        # SIP call attempt
+    async def _call_if_away(self, user_id: str, name: str) -> None:
         sip = self.services.get("sip")
-        if sip and hasattr(sip, "place_call"):
+        uri = getattr(sip, "user_uris", {}).get(user_id) if sip is not None else None
+        if not uri:
+            return
+        presence = self.services.get("presence")
+        if presence is not None:
             try:
-                await sip.place_call(phrase)
-            except Exception as e:
-                log.exception("IntruderHandler: SIP call failed: %s", e)
-
-        # Create monitoring task
+                if await presence():
+                    return  # someone is home and has heard the announcement
+            except Exception:
+                log.exception("%s: presence check failed; calling anyway", name)
         try:
-            await self.tasks.create(
-                event.user_id,
-                "monitoring",
-                title=f"Alarm triggered: {entity_id}",
-                detail=phrase,
-            )
-        except Exception as e:
-            log.exception("IntruderHandler: task creation failed: %s", e)
+            await sip.call_and_speak(uri, self.phrase, False)
+        except Exception:
+            log.exception("%s: SIP call failed", name)
+
+
+class FireHandler(SafetyHandler):
+    """Smoke or fire detected."""
+
+    phrase = "Attention. Smoke or fire has been detected in the house."
+    title = "Fire/smoke detected"
+
+
+class IntruderHandler(SafetyHandler):
+    """Alarm panel triggered."""
+
+    phrase = "Attention. The alarm has been triggered."
+    title = "Alarm triggered"

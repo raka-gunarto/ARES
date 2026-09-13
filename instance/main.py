@@ -1,59 +1,16 @@
-"""ARES daemon entrypoint (M10): wires the event bus, CLI and scheduler
-sources, console channel, push notification channel, memory storage, real
-TaskStore, the real Agent (spec §4.10), voice pipeline (spec §7.4), SIP
-service/source/channels (spec §7.5), time tools (spec §8), sandboxed shell
-tool (spec §15), and privilege request store/tools/source (spec §16) together.
+"""ARES daemon entrypoint — the only file that performs instance wiring (spec §8).
 
-This is the ONLY file in the repo that performs instance wiring (spec §8).
-Per M5 scope, CLI source, scheduler source, console channel, push channel
-(when enabled), FilesystemMemory, and real TaskStore are wired. Memory tools
-and task tools (update_task, get_task_history) are registered as discoverable
-tools so search_tools can locate them (§4.10).
+Builds the core (event bus, sessions, router, TaskStore, FilesystemMemory,
+tool registry, tracer, Agent, Dispatcher) and then wires each plugin only when
+its `plugins.<name>.enabled` flag is set: console channel, CLI and scheduler
+sources, ntfy push, Home Assistant (+ the speaker channel and safety-critical
+handlers, §4.9/§7.7), voice rooms (§7.4), SIP (§7.5), time tools, the
+sandboxed shell (§15), fetch_page and the stateful browser (§6), privilege
+requests (§16), self-edit (§18), subagents (§20) and the dashboard (§17).
 
-The push notification channel (NtfyChannel) is registered when the push_ntfy
-plugin is enabled in config (§7.6).
-
-Per M6, when `home_assistant` is enabled in config, HAService is placed in
-`services["home_assistant"]`, HOME_TOOLS are registered, and a
-HomeAssistantSource is added to the supervised sources list (its `start()`
-idles — the live WS transport is a recorded Blocker). When `safety_critical`
-is enabled, FireHandler and IntruderHandler are registered on the critical
-handler registry so fire/intrusion events bypass the LLM entirely (§4.9).
-With both disabled (the shipped default), the daemon behaves exactly as M5.
-
-Per M7, when `voice` is enabled in config, one VoiceSource per configured
-room is added to supervised sources, and a VoiceTTSChannel is registered on
-the router. Voice wiring is fully guarded by the enabled flag; with the default
-config (voice disabled), no voice classes are instantiated and no voice extra
-dependencies are required.
-
-Per M8, when `sip` is enabled in config, SIPService is created (raises
-RuntimeError if pjsua2 is missing — correct fail-fast), placed in
-`services["sip"]`, COMMS_TOOLS are registered, SIPSource is added to
-supervised sources, and SIPMessageChannel/SIPCallChannel are registered on
-the router. SIP wiring is fully guarded by the enabled flag; with the default
-config (sip disabled), no SIP classes are instantiated and pjsua2 is never
-required.
-
-Per M9, when `time_tools` is enabled in config, time tools (get_weather,
-get_calendar, add_calendar_event) are registered on the tool registry. Time
-tools are enabled by default; this wiring is guarded by the enabled flag
-and only constructs tools without network access at startup.
-
-Per M10, when `shell` is enabled in config, the sandboxed RunShell tool is
-registered via build_shell_tools(). When `privileges` is enabled, PrivStore
-is initialized and placed in services["privileges"], privilege tools
-(request_privilege, get_privilege_requests) are registered, and PrivilegeSource
-is added to supervised sources. Both plugings are wired only when enabled;
-they are fully optional and disabled by default. Spec §14 security boundaries
-are enforced: PrivStore.approve()/deny() are NEVER called from main.py
-(dashboard-only operations).
-
-The dashboard and other plugins do not exist yet and are wired in later
-milestones — their config sections are ignored without error.
-
-The Agent's §4.10 signature hard-requires a TaskStore and a BaseMemory.
-Both are now real (M4): TaskStore backed by SQLite, FilesystemMemory on disk.
+Prod tripwires (`enforce_prod_tripwires`) run before anything is started, so a
+missing separation fails fast. Privilege approve/deny is never called from
+here: those are dashboard-operator actions only (§14).
 """
 from __future__ import annotations
 
@@ -196,7 +153,8 @@ async def main(config_path: str) -> None:
         timeout_minutes=config.session.timeout_minutes,
     )
     router = ResponseRouter(sessions)
-    router.register(ConsoleChannel())
+    if config.plugins.get("console_channel", {}).get("enabled", True):
+        router.register(ConsoleChannel())
 
     push_config = config.plugins.get("push_ntfy", {})
     if push_config.get("enabled"):
@@ -326,6 +284,10 @@ async def main(config_path: str) -> None:
             language=speaker_config.get("language"),
         )
         router.register(speaker_channel)
+        # Safety alerts (§7.7) announce on the speaker and skip the phone call
+        # when someone is home.
+        services.setdefault("announcers", []).append(speaker_channel.announce)
+        services["presence"] = speaker_channel.anyone_home
 
     voice_config = config.plugins.get("voice", {})
     if voice_config.get("enabled"):
@@ -354,14 +316,14 @@ async def main(config_path: str) -> None:
             )
             sources.append(voice_source)
 
-        router.register(
-            VoiceTTSChannel(
-                rooms,
-                voice_config.get("default_room", ""),
-                voice_config.get("piper_model", ""),
-                mute_events,
-            )
+        voice_channel = VoiceTTSChannel(
+            rooms,
+            voice_config.get("default_room", ""),
+            voice_config.get("piper_model", ""),
+            mute_events,
         )
+        router.register(voice_channel)
+        services.setdefault("announcers", []).append(voice_channel.broadcast)
 
     sip_service: object | None = None
     sip_config = config.plugins.get("sip", {})
@@ -484,7 +446,7 @@ async def main(config_path: str) -> None:
     dispatcher_task = asyncio.create_task(dispatcher.run())
     supervisor_tasks = [asyncio.create_task(supervise(s, bus)) for s in sources]
 
-    log.info("ARES M11 daemon started (persona=%s)", config.persona.strip().splitlines()[0])
+    log.info("ARES daemon started (persona=%s)", config.persona.strip().splitlines()[0])
 
     await shutdown_event.wait()
 

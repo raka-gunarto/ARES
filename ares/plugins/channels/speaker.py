@@ -104,14 +104,29 @@ class SpeakerChannel(BaseChannel):
         try:
             if not await self.anyone_home():
                 return False
-            data: dict[str, typing.Any] = {**self.service_data, self.tts_field: message}
-            if self.language:
-                data["language"] = self.language
+        except Exception as e:
+            logger.error("speaker: presence check failed for %s: %s", user_id, e)
+            return False
+        return await self.announce(message)
+
+    async def announce(self, message: str) -> bool:
+        """Speak `message` on the speaker now, regardless of presence.
+
+        deliver() gates on presence; the safety handlers (§7.7) call this
+        directly, because an alarm is announced whether or not anyone is
+        tracked as home.
+        """
+        if not self.service_entity:
+            return False
+        data: dict[str, typing.Any] = {**self.service_data, self.tts_field: message}
+        if self.language:
+            data["language"] = self.language
+        try:
             await self.ha.call_service(
                 self.tts_domain, self.tts_service, self.service_entity, data
             )
-            logger.info("speaker: announced via %s for %s", self.service_entity, user_id)
-            return True
         except Exception as e:
-            logger.error("speaker: announce failed for %s: %s", user_id, e)
+            logger.error("speaker: announce failed: %s", e)
             return False
+        logger.info("speaker: announced via %s", self.service_entity)
+        return True
