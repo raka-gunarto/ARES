@@ -1,6 +1,6 @@
 # ARES — Automated Request Execution System
 
-ARES is a self-hosted, always-on, event-driven personal AI agent. It receives events from pluggable sources (voice, Home Assistant, SIP, scheduler, CLI), reasons about them with an LLM via an OpenAI-compatible API, keeps memory as human-editable markdown files, and maintains open tasks in SQLite for continuity. Replies route dynamically to whichever channel the user is currently on—voice, text, push notification, or web.
+ARES is a self-hosted, always-on, event-driven personal AI agent. It receives events from pluggable sources (voice, Home Assistant, SIP, scheduler, CLI, the web dashboard), reasons about them with an LLM via an OpenAI-compatible API, keeps memory as human-editable markdown files, and maintains open tasks in SQLite for continuity. Replies route dynamically to whichever channel the user is currently on—voice, a Home Assistant speaker, text, push notification, or web. It can browse the web (a one-shot page fetch and a persistent browser you can watch and take over), and hand long work to bounded background subagents.
 
 ## Requirements
 
@@ -12,6 +12,7 @@ ARES is a self-hosted, always-on, event-driven personal AI agent. It receives ev
   - **ntfy server** (for push notifications; self-hosted or ntfy.sh)
   - **Home Assistant** (for home control; reachable via WebSocket)
   - **CalDAV server** (for calendar access; optional time tools)
+  - **Chromium** (for the `browser` plugin: `fetch_page` and the stateful `browser`)
   - **grep** and **git** (system binaries, standard on Linux/macOS)
 
 ## Install
@@ -68,15 +69,19 @@ pip install -e ".[dashboard]"
    - `NTFY_TOKEN`, `HA_TOKEN`, `SIP_PASSWORD`, etc. — as needed for enabled plugins
 
 3. Edit `instance/config.yaml` to enable/configure plugins. The full reference is `ARES-SPEC.md` §8. Key plugin flags (most default to `enabled: false`):
-   - `cli` — CLI source for development (always enabled)
+   - `cli` — CLI source for development
+   - `console_channel` — prints replies to the terminal (on unless set to `false`)
    - `scheduler` — time-based events and task reminders (enabled by default)
    - `push_ntfy` — push notifications via ntfy
    - `home_assistant` — Home Assistant integration
+   - `speaker` — announce replies on a Home Assistant speaker when someone is home (needs `home_assistant`)
    - `voice` — voice pipeline (speech recognition + TTS)
    - `sip` — SIP calling and messaging
    - `time_tools` — weather, calendar (read/add)
    - `safety_critical` — deterministic handlers for fire/intrusion (bypasses LLM)
    - `shell` — sandboxed command execution
+   - `browser` — `fetch_page` and the persistent, operator-supervised `browser` (needs Chromium; prod needs `browser_user`)
+   - `subagents` — bounded background runs that report back
    - `privileges` — privilege escalation queue (requires broker)
    - `dashboard` — web interface
    - `selfedit` — self-modification (branch, PR, human-gate merge)
@@ -118,7 +123,7 @@ Run the test suite:
 .venv/bin/pytest tests/ -q
 ```
 
-Tests cover tool registry search, memory safety, task store CRUD, config parsing, session management, dispatcher policy, and plugin validations. Hardware-dependent plugins (voice, SIP) have import-level and config tests only.
+Tests cover the core (tool registry search, memory path safety, task store, config, sessions, dispatcher policy, the agent loop), the security invariants (RULES sync, sandbox/browser user separation, the egress proxy, broker allowlist, updater HMAC and SHA checks, SIP caller matching), and the dashboard routes. Hardware-dependent plugins (voice, SIP audio) have import-level and config tests only.
 
 ## Architecture (Brief Overview)
 
@@ -129,7 +134,9 @@ ARES is built around **an async event bus** and a **priority model**:
 - **NORMAL** events (conversation, reminders) flow through the agent's LLM loop.
 - **LOW** events are dropped when the dispatcher is busy, preventing queue buildup.
 
-**One session per user** persists across all channels, so a conversation can start on voice, pause, and continue over text—the agent retains context. The **ResponseRouter** decides *where* to send a reply (voice, SMS, push, console) based on which channel the event came from and availability. The agent loop has a tool-call budget; it reasons via the LLM, discovers domain-specific tools with `search_tools`, and executes them.
+**One session per user** persists across all channels, so a conversation can start on voice, pause, and continue over text—the agent retains context. The **ResponseRouter** decides *where* to send a reply based on the channel the user last spoke on; if that channel can't deliver (e.g. the dashboard tab is closed) it falls back to a Home Assistant speaker when someone is home, then push, then the console. The agent loop has a tool-call budget; it reasons via the LLM, discovers domain-specific tools with `search_tools`, and executes them.
+
+Work that would hold up the conversation goes to **background subagents**: bounded, read-only LLM loops that report back as events. Every agent turn is written to a live **activity trace** the dashboard can tail.
 
 **Memory** is markdown files in `instance/memory/`—human-readable, editable, and searched by grep. The LLM maintains an `INDEX.md` file listing where facts live. **Tasks** live in SQLite (`instance/tasks/tasks.db`); open tasks are injected into every agent cycle so the daemon keeps intent and continuity across restarts.
 
@@ -180,7 +187,7 @@ from ares.core.channel import BaseChannel, ChannelType
 from ares.core.session import Session
 
 class MyChannel(BaseChannel):
-    type = ChannelType.CONSOLE  # one of: VOICE, SIP_CALL, SIP_MESSAGE, PUSH, CONSOLE, WEB
+    type = ChannelType.CONSOLE  # one of: VOICE, SIP_CALL, SIP_MESSAGE, SPEAKER, PUSH, CONSOLE, WEB
     
     async def deliver(self, user_id: str, message: str, session: Session) -> bool:
         """Send message to the user. Return True if sent, False if unavailable."""
@@ -227,7 +234,8 @@ If your plugin needs shared state (e.g., an API client), place it in `services["
 
 - Plugins import from `ares.core` only; core never imports from plugins.
 - Sources call `self.emit()` with `type`, `payload`, and `priority` to publish; the event bus routes automatically.
-- Channels' `deliver()` method returns `bool`; if False, ARES tries the fallback channel (push then CONSOLE).
+- Channels' `deliver()` method returns `bool`; if False, ARES tries the fallbacks (SPEAKER, then PUSH, then CONSOLE).
+- Plugins never import each other; a collaborator from another plugin arrives through `services`.
 - Tool exceptions are logged; return `ToolResult(ok=False, content="error")` for user-facing failures.
 - All I/O is async (`asyncio`). No threads except where a library forces it.
 
@@ -237,10 +245,9 @@ See `ares/plugins/` for working examples of sources, channels, and tools.
 
 1. **Read** `PROGRESS.md` to see what's done and where to resume.
 2. **Activate the venv** and verify: `which python`.
-3. **Make changes** to code in `ares/`.
-4. **Run tests** before committing: `.venv/bin/pytest tests/ -x`.
-5. **Commit** with message: `M<milestone>: <path> — <summary>`.
-6. **Update** `PROGRESS.md` and commit together.
+3. **Make changes** to code in `ares/`. Spec changes need operator sign-off, a version bump, and an `ARES-SPEC.md` Appendix A entry.
+4. **Run tests** before committing: `.venv/bin/pytest tests/ -q`. If you touched the dashboard frontend, rebuild it with `.venv/bin/python ares/plugins/dashboard/frontend/build.py`.
+5. **Update** `PROGRESS.md` (short `## Current`, full entry under `## History`) and commit it with the change: `<version or kind>: <what> — <summary>`.
 
 See `CLAUDE.md` for detailed working rules.
 

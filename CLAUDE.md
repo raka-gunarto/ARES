@@ -1,16 +1,19 @@
 # CLAUDE.md — Working Rules for This Repository
 
-You are implementing ARES from `ARES-SPEC.md`. That spec is authoritative and
-frozen. This file tells you how to work, not what to build.
+You are working on ARES, specified by `ARES-SPEC.md`. That spec is
+authoritative: the code implements it, and it changes only when the operator
+authorises a change (see "Changing the spec"). This file tells you how to work,
+not what to build.
 
 ## Session start (every session, no exceptions)
 
 1. Read `ARES-SPEC.md` §0 (implementer rules) in full.
 2. Read `PROGRESS.md` — the `## Current` section tells you exactly where to
    resume. Do not re-derive state from the codebase.
-3. Read only the spec sections relevant to the current milestone (the ticklist
-   entries reference them). Do not re-read the whole spec every session. For any
-   M10–M13 work, read spec §14 (security model) first — it constrains all of it.
+3. Read only the spec sections relevant to the task. Do not re-read the whole
+   spec every session. For anything touching the shell, browser, privileges,
+   dashboard, self-edit, updater or deployment, read spec §14 (security model)
+   first — it constrains all of it.
    `DEPLOYMENT.md` is the operator's guide, **not** an implementation input;
    read it only to understand the runtime your code lands in, never build from it.
 4. Activate the virtual environment (see "Virtual environment" below) and
@@ -56,35 +59,57 @@ exceptions — not for tests, not for one-liner import checks, not for pip.
 
 ## Order of work
 
-- Follow the PROGRESS.md ticklist top to bottom. One item at a time.
-- Do not start a milestone until the previous milestone's acceptance test
-  passes and is ticked.
-- Do not refactor completed modules while working on later milestones.
-- Spec silent on a detail → simplest option that passes the acceptance test,
-  plus a dated line under `## Decisions`.
-- Missing dependency, spec contradiction, or anything needing a spec change →
-  a line under `## Blockers`, then move to the next unblocked item. Never
-  work around a blocker by adding dependencies or inventing architecture.
+The M0–M13 build is complete. Work now arrives as operator requests (a bug seen
+in the live trace, a new capability, a review). For each:
 
-## After completing each file
+- Reproduce or locate the problem in code or the live trace before changing
+  anything. Verify review findings yourself — some turn out to be stale.
+- Keep the change scoped to the request. Do not refactor unrelated modules.
+- Spec silent on a detail → simplest option that works, plus a dated line under
+  `## Decisions` in PROGRESS.md.
+- Missing dependency, spec contradiction, or anything needing a spec change the
+  operator hasn't authorised → ask, or record it under `## Blockers`. Never work
+  around it by adding dependencies or inventing architecture.
 
-1. Run the relevant tests (`.venv/bin/pytest tests/ -x -q`). New core code
-   without a listed test still must import cleanly:
-   `.venv/bin/python -c "import ares.core.<mod>"`.
-2. Update PROGRESS.md: tick the item, update `## Current` to the next action.
-3. Commit (see below). The PROGRESS.md update goes in the same commit as the
-   code it describes.
+## Changing the spec
+
+`ARES-SPEC.md` is edited only when the operator authorises the change (a
+request for the behaviour counts; say that you are changing the spec). Every
+authorised edit:
+
+1. bumps the version in the title (v1.16 → v1.17);
+2. adds an entry to Appendix A saying what changed and why;
+3. updates the body sections so the body alone is always current.
+
+The RULES block (§4.11) must stay byte-identical in `ares/core/prompt.py`,
+`ARES-SYSTEM-PROMPT.md` and the spec (`tests/test_rules_sync.py`). Change its
+wording only when the operator explicitly asks for a RULES change.
+
+## Finishing a change
+
+1. Run the full suite: `.venv/bin/pytest tests/ -q`. New modules must at least
+   import cleanly.
+2. If the dashboard frontend changed, rebuild the bundle:
+   `.venv/bin/python ares/plugins/dashboard/frontend/build.py`, and commit
+   `static/index.html` with the source.
+3. Update PROGRESS.md: a short `## Current`, and the full entry at the top of
+   `## History` (move the previous Current entry there verbatim). Update any
+   docs the change made stale (README.md, DEPLOYMENT.md).
+4. Commit, push to `main` (the updater deploys it), then confirm
+   `/api/version` shows the new SHA and check the change live where possible.
+   Config, unit or provisioning changes are not deployed by the updater — they
+   need the manual VM procedure in DEPLOYMENT.md.
 
 ## Git rules
 
-- Commit after every ticklist item. Small commits, one item each.
-- Message format: `M<milestone>: <path or item> — <one-line summary>`
-  - `M2: ares/core/agent.py — event handling cycle per spec §4.10`
-  - `M4: acceptance — reminder fires and closes end-to-end`
-- Milestone completion gets its own commit: `M3: milestone complete — acceptance passed`.
-- Never commit: `.env`, `instance/tasks/*.db`, `instance/privq.db`, `.venv/`,
-  `/etc/ares/*` real configs, `broker.json`, `updater.json`, `__pycache__`,
-  model weights, audio/temp files, the scratch clone. Only `.example` config
+- Small, logical commits: one concern each.
+- Message format: `<version or kind>: <what> — <one-line summary>`
+  - `v1.16: stateful browser — persistent Chromium session + dashboard live view (spec §6.6/§17)`
+  - `cleanup: safety handlers actually announce and call (spec §4.9/§7.7)`
+- No AI attribution trailers in commit messages.
+- Never commit: `.env`, `updater.env`, `instance/tasks/*.db`, `instance/privq.db`,
+  `.venv/`, `/etc/ares/*` real configs, `broker.json`, `updater.json`,
+  `__pycache__`, model weights, audio/temp files. Only `.example` config
   variants are committed. Check `.gitignore` covers anything new you generate.
 - Never use `git add .` — stage the specific files you touched.
 - No amending or rebasing published history. If a committed file was wrong,
@@ -92,10 +117,10 @@ exceptions — not for tests, not for one-liner import checks, not for pip.
 - Work on `main` directly. No branches, no merge commits (single-agent repo).
 - Never commit a broken tree: if tests fail, fix or revert before committing.
 
-## Security boundaries (M10–M13 — do not blur these)
+## Security boundaries (permanent)
 
 These are the point of the deployment layer. Breaking one silently is worse than
-not building the feature. Read spec §14 before writing any M10–M13 code.
+not building the feature. Read spec §14 before touching any of it.
 
 - `broker/` and `updater/` are **stdlib-only** and must **never import `ares`**
   (there are tests that assert this). They run at higher privilege; keep them
@@ -104,11 +129,15 @@ not building the feature. Read spec §14 before writing any M10–M13 code.
   PRs. `approve`/`deny` are dashboard-operator actions; merge is a human GitHub
   action gated by branch protection. There must be no code path from ARES's
   reasoning to running privileged or self-modified code without a human gate.
-- The shell tool runs as the sandbox user (`ares-sbx`), **never** as the daemon
-  user. In prod, if the runner would be the `ares` uid, refuse and log.
+- The shell tool and `fetch_page` run as the sandbox user (`ares-sbx`), **never**
+  as the daemon user. In prod, if the runner would be the `ares` uid, refuse and log.
+- The stateful browser runs as `ares-browser` — not `ares`, not `ares-sbx` (its
+  profile holds the operator's logins). All browser egress goes through the
+  daemon's egress proxy, which only reaches public web addresses.
 - The daemon never writes `/opt/ares` (its own live code) and never reads the
-  secret `.env` file. Secrets come from `os.environ` only. Self-edits touch the
-  scratch clone only.
+  secret `.env` file. Secrets come from `os.environ` only. Self-edits are
+  API-only: a new branch and PR through the GitHub API, never a local clone and
+  never the base branch.
 - The broker executes only requests that are **both** human-approved **and**
   allowlist-regex-matched. Build argv from fixed templates — never `shell=True`,
   never split attacker-controlled strings.
@@ -127,6 +156,9 @@ not building the feature. Read spec §14 before writing any M10–M13 code.
 - No vector DBs, embeddings, LangChain, or agent frameworks.
 - No features outside the v1 scope list (spec §1) — the out-of-scope list is
   binding.
-- No editing `ARES-SPEC.md`. If the spec is wrong, that is a Blocker.
+- No editing `ARES-SPEC.md` without operator authorisation (see "Changing the
+  spec").
+- No source file over 400 lines. Plugins never import other plugins; core never
+  imports plugins — plugin collaborators arrive through `services`.
 - Never commit `broker.json`, `updater.json`, or any real token/secret — only
   the `.example` variants.

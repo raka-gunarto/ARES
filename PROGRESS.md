@@ -1,10 +1,75 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.16. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.17. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
+
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.17. Nothing is in progress. ***
+
+Last change: v1.17 (operator-authorised) — review-and-cleanup pass after a full
+code + docs review. Details under `## History`.
+
+Next action: none queued. New work starts from an operator request; spec changes
+are operator-authorised, bump the version, and add an entry to spec Appendix A.
+
+Deployment state: code deploys via the updater on push to `main`. Config, unit
+and provisioning changes are manual (VM stop + rw rootfs; see DEPLOYMENT.md and
+memory notes). v1.16's `ares-browser` provisioning is live in the VM.
+
+Open (non-blocking):
+ - `shellcheck` is not installed in the dev env; run it on deploy/*.sh in the VM.
+ - Room voice is disabled in prod (no audio devices in the VM). The `wake_word`
+   intent strategy has never run against real audio and is likely non-functional;
+   treat voice as unverified if it is ever enabled.
+ - Files over the §0 400-line limit, left as-is by operator choice (2026-09-13):
+   sip/client.py, sources/home_assistant.py, tools/home_tools.py,
+   tools/selfedit_tools.py, instance/main.py.
+ - Browser known limits: session-only cookies are lost when the browser closes;
+   Chromium runs with --no-sandbox, so uid separation + the egress proxy are the
+   containment.
+
+## History
+
+Newest first. Entries are moved here verbatim from `## Current` when
+superseded.
+
+v1.17 (operator-authorised) — review and cleanup. Reported: "spin up sonnet 5
+subagents and do a full code review and markdown docs review, lets do some
+cleanup". Six review agents; every finding re-verified before acting. Operator
+choices: broker path left as-is; CLAUDE.md updated to match practice; full doc
+restructure; no file splits.
+ - fetch_page SSRF: only the top-level host was pinned (--host-resolver-rules);
+   subresources/redirects/scripts could reach private addresses. Now a per-call
+   EgressProxy (the v1.16 one); proxy caps 128 connections (503) and idles
+   tunnels out after 600s. Verified with a real fetch through the proxy.
+ - Safety handlers (§7.7) only pushed. Now push + announce on every speaker
+   (`SpeakerChannel.announce`) and voice room (`VoiceTTSChannel.broadcast`) +
+   call if away + monitoring task, each step independently guarded.
+   test_safety_handlers.py.
+ - SIP: caller check was a substring of the raw From header (display name is
+   caller-controlled). sip/uri.py compares user@host; SIP MESSAGEs from unknown
+   senders are now dropped (previously any sender became user "primary").
+   Live Asterisk sends From sip:phone@10.16.0.1, which still matches.
+ - Dashboard: esc() escapes quotes; memory markdown links only http(s)/mailto
+   (verified in headless Chrome); authed header shows the build; POST /api/chat
+   400 on bad body.
+ - Dispatcher turn cap 900s (a hung await wedged the serial queue silently);
+   LLM client retries 429 (Retry-After capped 20s); updater refuses non-hex SHA.
+ - add_calendar_event: local/offset times → UTC (was local time stamped Z and
+   offsets mangled), RFC 5545 text escaping, CalDAV off the loop.
+ - Small: Whisper transcribe in a thread; memory append doesn't start a new file
+   with a blank line; console_channel.enabled honoured; vestigial imports;
+   unified loggers; browser teardown no longer tries to kill an ares-browser pid.
+ - Review findings NOT acted on (stale or declined): llm.aclose() already called
+   at shutdown; broker unit path (operator: leave); file splits (operator: skip).
+ - Docs: spec v1.17 restructure (Appendix A history, §13 in order, §6.6 web
+   tools, §3 regenerated, §4.14 trace, §8 trace/speaker, §17.2 version/trace
+   routes, scratch-clone wording removed); PROGRESS Current/History split;
+   CLAUDE.md, DEPLOYMENT.md, README.md brought up to date.
+ - Tests: new test_sip_uri, test_safety_handlers, test_calendar_ical + additions to
+   agent/dispatcher/updater/memory/dashboard/browser tests. Full suite: 509 passed, 1 skipped.
 
 *** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13 + v1.14 + v1.15 + v1.16. ***
 
@@ -400,7 +465,38 @@ Open (non-blocking, environment-limited — NOT code gaps):
 Any further work beyond the v1.2 bump is operator deployment or
 post-v1 scope (spec §1 out-of-scope list is binding).
 
+### Resolved blockers
+
+- 2026-07-11 (M6): **HA live WebSocket transport.** §7.3 requires `HomeAssistantSource`
+  to connect to `ws_url`, authenticate, and `subscribe_events(state_changed)` over a
+  WebSocket. §12's dependency list contains NO WebSocket client (core: pydantic, PyYAML,
+  python-dotenv, httpx, aiosqlite; httpx has no WS support), and §0 forbids adding
+  dependencies. Hand-rolling an RFC6455 client would be inventing unspecified plumbing
+  (and untestable without a WS server dep). RESOLUTION PENDING A USER DECISION: add a WS
+  dependency (e.g. `websockets`) to §12, or accept REST polling.
+  MITIGATION (so M6 still ships & the acceptance passes against a MOCKED HA, per §10):
+  everything except the live WS wire is built and tested — HAService REST methods
+  (get_state/get_states/call_service/snapshot_summary/camera_snapshot over httpx), the
+  full noise filter (domain/entity allow-list, same-state drop, debounce, priority-rule
+  mapping) exposed via `HomeAssistantSource.process_state_changed(...)` and driven by
+  synthetic events, `ares_event` passthrough, home_tools, and critical/safety handlers.
+  `start()` logs this blocker and idles (the source is inert at runtime until a WS
+  transport is provided); it does NOT crash the daemon.
+  **RESOLVED 2026-07-12 (v1.2):** operator authorised adding a WebSocket client to the
+  spec. `websockets` added as the `home_assistant` extra (§12); `start()` now runs the
+  live WS transport (auth -> subscribe_events(state_changed) -> reconnect backoff 2->60s),
+  dispatching into the existing filter methods. See the v1.2 ticklist section + Decisions.
+
 ## Ticklist
+
+### v1.17 — Review cleanup (operator-authorised)
+- [x] fetch_page behind the egress proxy; proxy connection cap + idle timeout
+- [x] safety handlers announce/call/task (services announcers + presence)
+- [x] SIP caller address matching; unknown-sender messages dropped
+- [x] dashboard quote escaping + link scheme allow-list + header version; chat 400
+- [x] dispatcher turn timeout; LLM 429 retry; updater sha guard
+- [x] calendar UTC/escaping; voice STT off-loop; memory append; small cleanups
+- [x] spec v1.17 restructure; PROGRESS/CLAUDE/DEPLOYMENT/README updated
 
 ### M0 — Skeleton
 - [x] pyproject.toml  (core deps only; extras: voice, sip, calendar, dev — spec §12)
@@ -599,6 +695,14 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 - [x] spec §18/§14/§8 + DEPLOYMENT updated; full suite 220 passed
 
 ## Decisions
+
+- 2026-09-13 (v1.17): turn cap is 900 s, not the subagent default — a call with
+  listen or a multi-step browser flow legitimately runs minutes, and the cap exists to
+  un-wedge a hung await, not to police slow turns.
+- 2026-09-13 (v1.17): per-frame Silero VAD stays on the event loop (≈1 ms per 30 ms
+  frame; a thread hop per frame costs more than it saves); only Whisper moved off-loop.
+- 2026-09-13 (v1.17): SIP messages resolve `user_id` from the matched URI instead of
+  hard-coding "primary"; calls still emit as "primary" (single configured user).
 
 - 2026-08-27 (v1.9, operator-authorised): `monitoring` tasks get a real clock (§7.2).
   Found by reading the live trace + tasks DB: `monitoring` had NO machinery at all —
@@ -848,6 +952,9 @@ post-v1 scope (spec §1 out-of-scope list is binding).
   exists in the code and DEPLOYMENT.md is not an implementation input (per CLAUDE.md); the
   provisioning matches what the daemon actually runs. Spec §15 authorises "sudo -n -u
   {sandbox_user} /bin/bash -lc {command}".
+  **SUPERSEDED 2026-07-12 (PATCH-2):** the `/bin/bash` sudoers grant is gone. The only
+  entry is `ares ALL=(ares-sbx) NOPASSWD: /usr/local/sbin/ares-sbx-runner` (deploy/sbx-runner),
+  and shell_tools.py execs the runner. v1.16 added the matching ares-browser runner line.
 - 2026-07-12 (M13): no real GitHub/webhook/prod-VM here, so the M13 acceptance drove the
   updater against a LOCAL bare git origin (real poll/ls-remote/clone/worktree/symlink swap)
   and mocked only `smoke_import` + `run_restart`; the prod tripwire was asserted in-process
@@ -855,22 +962,4 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Blockers
 
-- 2026-07-11 (M6): **HA live WebSocket transport.** §7.3 requires `HomeAssistantSource`
-  to connect to `ws_url`, authenticate, and `subscribe_events(state_changed)` over a
-  WebSocket. §12's dependency list contains NO WebSocket client (core: pydantic, PyYAML,
-  python-dotenv, httpx, aiosqlite; httpx has no WS support), and §0 forbids adding
-  dependencies. Hand-rolling an RFC6455 client would be inventing unspecified plumbing
-  (and untestable without a WS server dep). RESOLUTION PENDING A USER DECISION: add a WS
-  dependency (e.g. `websockets`) to §12, or accept REST polling.
-  MITIGATION (so M6 still ships & the acceptance passes against a MOCKED HA, per §10):
-  everything except the live WS wire is built and tested — HAService REST methods
-  (get_state/get_states/call_service/snapshot_summary/camera_snapshot over httpx), the
-  full noise filter (domain/entity allow-list, same-state drop, debounce, priority-rule
-  mapping) exposed via `HomeAssistantSource.process_state_changed(...)` and driven by
-  synthetic events, `ares_event` passthrough, home_tools, and critical/safety handlers.
-  `start()` logs this blocker and idles (the source is inert at runtime until a WS
-  transport is provided); it does NOT crash the daemon.
-  **RESOLVED 2026-07-12 (v1.2):** operator authorised adding a WebSocket client to the
-  spec. `websockets` added as the `home_assistant` extra (§12); `start()` now runs the
-  live WS transport (auth -> subscribe_events(state_changed) -> reconnect backoff 2->60s),
-  dispatching into the existing filter methods. See the v1.2 ticklist section + Decisions.
+- (none currently)

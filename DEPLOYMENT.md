@@ -21,6 +21,7 @@ true. If you shortcut it, you lose the guarantee.
 │   ├─ Firecracker microVM  ── "ares-vm"        │
 │   │    ├─ ares          (daemon, no sudo)     │
 │   │    ├─ ares-sbx      (sandbox shells)      │
+│   │    ├─ ares-browser  (persistent browser)  │
 │   │    ├─ ares-deploy   (update listener)     │
 │   │    └─ root          (broker)              │
 │   ├─ Ollama / vLLM      (LLM inference)       │  ← can be host or another box
@@ -64,6 +65,9 @@ vCPUs, mem, TAP) in your own infra repo, not the ARES repo.
      voice hardware lives elsewhere and reaches ARES over the network, so you
      may skip audio libs in the VM).
    - PJSIP + `pjsua2` bindings only if SIP runs in-VM.
+   - Chromium (`/usr/bin/chromium`, set as `browser_binary`) if the `browser`
+     plugin is enabled — both `fetch_page` and the stateful `browser` drive it as
+     an external binary.
 3. Copy the ARES repo release to `/opt/ares/releases/<sha>` and symlink
    `/opt/ares/app -> /opt/ares/releases/<sha>`.
 4. Create the app venv: `python3.11 -m venv /opt/ares/venv` and
@@ -82,8 +86,8 @@ This script (shipped in the repo, written by the coding agent per spec §14) is
 idempotent and does all the privilege setup. Review it before running — it is
 the thing that creates the security boundary. It:
 
-- Creates users: `ares`, `ares-sbx`, `ares-deploy` (all no-login shells except
-  as needed), leaving `root` for the broker.
+- Creates users: `ares`, `ares-sbx`, `ares-browser`, `ares-deploy` (all no-login
+  shells except as needed), leaving `root` for the broker.
 - Creates and `chown`/`chmod`s:
   - `/opt/ares` → `ares-deploy:ares`, app tree `0750` (RO to `ares`).
   - `/etc/ares/config.yaml` → `0640 root:ares`.
@@ -92,6 +96,9 @@ the thing that creates the security boundary. It:
   - `/var/lib/ares` → `0700 ares:ares` (state, memory, DBs).
   - `/home/ares-sbx/scratch` → `ares-sbx` (sandbox scratch for `run_shell`;
     self-edit no longer uses a clone — it is API-only from the daemon).
+  - `/home/ares-browser` → `0700 ares-browser` — the persistent browser's
+    profile, which holds any logins you make in it. Neither `ares` nor
+    `ares-sbx` can read it.
 - Installs `deploy/sbx-runner` to **`/usr/local/sbin/ares-sbx-runner`**
   (`root:root`, `0755`) — the sole sudo entry point `ares → ares-sbx`. It is
   installed **outside the app tree deliberately**: it is therefore not part of
@@ -99,10 +106,16 @@ the thing that creates the security boundary. It:
   merged PR — changing it requires re-running `provision.sh`, a deliberate
   operator action. The runner scrubs the environment (`env -i`) so the daemon's
   secret env can never reach a sandbox shell, regardless of sudoers config.
+- Installs `deploy/browser-runner` to **`/usr/local/sbin/ares-browser-runner`**
+  (`root:root`, `0755`) — the sole sudo entry point `ares → ares-browser`, for
+  the same reasons. It starts Chromium with the fixed launch template the daemon
+  passes.
 - Installs the **sudoers drop-ins**, each a single exact rule:
   - `ares ALL=(ares-sbx) NOPASSWD: /usr/local/sbin/ares-sbx-runner` — lets the
     daemon drop **down** to the sandbox user to run shells, via the runner only.
     Not escalation.
+  - `ares ALL=(ares-browser) NOPASSWD: /usr/local/sbin/ares-browser-runner` —
+    the same drop-down, to the browser user, via its runner only.
   - `ares-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ares` — lets
     the updater restart the daemon after a verified update. Nothing else.
   - **No sudoers rule gives `ares` any root.** Root actions go through the
@@ -124,12 +137,13 @@ Three long-running services (unit files shipped in `deploy/`):
   start** and injects them into the process env, then drops to `ares`. This is
   why the daemon has the secret *values* but cannot read the secret *file*.
 - `ExecStart=/opt/ares/venv/bin/python -m instance.main /etc/ares/config.yaml`
-- Hardening: `NoNewPrivileges=true`, `ProtectSystem=strict`,
-  `ReadWritePaths=/var/lib/ares`, `ProtectHome=tmpfs` with
-  `BindPaths=/home/ares-sbx` (hides other homes but lets the runner traverse
-  into the sandbox home per §14.2), `PrivateTmp=true`. (The provisioner sets
-  these; they enforce the FS contract at the kernel level, not just by
-  permissions.)
+- Hardening: `ProtectSystem=strict`, `ReadWritePaths=/var/lib/ares`,
+  `ProtectHome=tmpfs` with `BindPaths=/home/ares-sbx /home/ares-browser` (hides
+  other homes but lets each runner `cd` into its own user's home per §14.2),
+  `PrivateTmp=true`. `NoNewPrivileges` is deliberately **not** set: it would
+  also block the two sudo drop-down paths to `ares-sbx` and `ares-browser`; the
+  daemon still has no sudo of its own. (These directives enforce the FS contract
+  at the kernel level, not just by permissions.)
 - `Restart=always`.
 
 **`ares-broker.service`** — the root broker.
@@ -234,6 +248,14 @@ Once `ares.service` is up, browse to `http://<vm-tailscale-ip>:8788`. Enter the
   (read-only; edit them by SSHing to `/var/lib/ares/memory` as `ares` if you
   want to correct something).
 - **Tasks** — see what ARES is tracking, waiting on, and scheduled to do.
+- **Trace** — the live activity trace: each event, model reply, tool call and
+  result as it happens. The first place to look when ARES does something odd.
+- **Subagents** — recent background runs, their progress and reports.
+- **Browser** — a live view of ARES's persistent browser. **Take control** to
+  click and type yourself; this is how you sign in to a site for ARES, so your
+  password never passes through the model (use the hidden text box for it).
+  ARES's `browser` tool refuses while you're in control; **Hand back** when done
+  (control also returns after 10 idle minutes).
 - **Approvals** — the important one: pending privilege requests, each showing
   the exact command and ARES's stated reason. **Approve** hands it to the broker
   (which still re-checks the allowlist); **Deny** closes it. This is your
@@ -276,6 +298,9 @@ Keep the dashboard on the tailnet/LAN only. There's no HTTPS termination in ARES
 - [ ] Chat round-trips.
 - [ ] `run_shell` in a chat runs as `ares-sbx` (`whoami` in a shell command
       returns `ares-sbx`, not `ares`).
+- [ ] With `browser_user: ares-browser` set under `plugins.browser` in
+      `/etc/ares/config.yaml`: the Browser tab launches a page, and opening a
+      private address (e.g. `http://10.16.0.1:8123`) is refused.
 - [ ] Ask ARES to request a package install; it appears under Approvals with the
       exact command; approving it makes the broker install it; denying leaves
       the system untouched.
