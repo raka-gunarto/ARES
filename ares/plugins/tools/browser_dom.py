@@ -147,9 +147,6 @@ def select_js(ref: int, option: str) -> str:
 """ % (int(ref), json.dumps(option))
 
 
-READY_STATE_JS = "document.readyState"
-
-
 def format_snapshot(snap: dict) -> str:
     """Render a snapshot dict as the text the model reads."""
     lines = [

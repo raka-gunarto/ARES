@@ -10,10 +10,12 @@ handled below rather than left to the model:
 
 * **SSRF.** The daemon sits on a host-private link with Home Assistant, the
   dashboard and the updater hook one hop away. A URL is model-supplied and may
-  come from injected content, so every resolved address is checked against the
-  private/loopback/link-local ranges BEFORE Chromium starts, and the winning
-  address is then pinned into Chromium so a rebinding DNS answer cannot swap it
-  afterwards.
+  come from injected content, so its host is checked against the private/
+  loopback/link-local ranges BEFORE Chromium starts — and, because the page's
+  own scripts, redirects and subresources open connections to hosts that check
+  never saw, every connection Chromium makes is also forced through a
+  per-fetch EgressProxy (browser_proxy.py) that vets each one and connects only
+  to the address it vetted.
 * **Injection.** Page text is attacker-controlled by definition. RULES already
   classes tool output as data, and the returned text is labelled and capped so
   one hostile page cannot dominate the context.
@@ -22,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import getpass
-import ipaddress
 import os
 import shlex
 import signal
@@ -33,6 +34,7 @@ from urllib.parse import urlparse, urlunparse
 from ares.core.tool import BaseTool, ToolContext, ToolResult
 from ares.core.utils.logging import get_logger
 
+from ares.plugins.tools.browser_proxy import EgressProxy, _is_forbidden_ip
 from ares.plugins.tools.shell_tools import RUNNER_PATH
 
 logger = get_logger(__name__)
@@ -108,19 +110,6 @@ def extract_text(html: str) -> str:
         logger.debug("browser: HTML parse failed; returning raw slice")
         return html
     return parser.text()
-
-
-def _is_forbidden_ip(ip: str) -> bool:
-    """True for any address the daemon must not be able to reach via a URL.
-
-    Blocks the host-private TAP link (Home Assistant, dashboard, updater hook),
-    loopback, link-local incl. cloud metadata, and every other non-global range.
-    """
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return True
-    return not addr.is_global
 
 
 def resolve_public_host(host: str, port: int) -> tuple[str | None, str | None]:
@@ -220,16 +209,18 @@ class FetchPage(BaseTool):
         if not parsed.hostname:
             return None, None, "error: url has no host"
 
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        try:
+            port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        except ValueError:
+            return None, None, "error: url has an invalid port"
         pinned, reason = resolve_public_host(parsed.hostname, port)
         if pinned is None:
             return None, None, f"error: {reason}"
 
         return urlunparse(parsed), pinned, None
 
-    def _build_command(self, url: str, pinned_ip: str, budget_ms: int) -> str:
+    def _build_command(self, url: str, proxy_port: int, budget_ms: int) -> str:
         """Build the sandbox shell command that renders `url`."""
-        host = urlparse(url).hostname or ""
         flags = [
             "--headless=new",
             "--disable-gpu",
@@ -243,9 +234,14 @@ class FetchPage(BaseTool):
             "--disable-background-networking",
             "--disable-sync",
             f"--virtual-time-budget={budget_ms}",
-            # Pin the address we already vetted, so a second DNS answer cannot
-            # redirect the fetch to an internal host after the check passed.
-            f'--host-resolver-rules={shlex.quote(f"MAP {host} {pinned_ip}")}',
+            # Every connection — the page, its redirects, scripts, XHRs and
+            # subresources — goes through the vetting proxy. `<-loopback>`
+            # removes Chromium's implicit localhost bypass; QUIC and
+            # non-proxied WebRTC UDP would route around an HTTP proxy.
+            f"--proxy-server=http://127.0.0.1:{proxy_port}",
+            shlex.quote("--proxy-bypass-list=<-loopback>"),
+            "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--dump-dom",
         ]
         binary = self.binary or BROWSER_BINARIES[0]
@@ -258,7 +254,7 @@ class FetchPage(BaseTool):
 
     async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
         """Render one page in the sandbox and return its text."""
-        url, pinned_ip, err = self._validate_url(kwargs.get("url", ""))
+        url, _, err = await asyncio.to_thread(self._validate_url, kwargs.get("url", ""))
         if err:
             return ToolResult(False, err)
 
@@ -276,13 +272,22 @@ class FetchPage(BaseTool):
                 False, "error: browser refused (no sandbox user separation in prod)"
             )
 
+        proxy = EgressProxy()
+        try:
+            proxy_port = await proxy.start()
+            return await self._render(url, proxy_port, timeout_s, kwargs)
+        finally:
+            await proxy.aclose()
+
+    async def _render(self, url: str, proxy_port: int, timeout_s: int, kwargs: dict) -> ToolResult:
         # Give the page most of the wall clock, keeping a margin for startup.
-        command = self._build_command(url, pinned_ip, max(1000, (timeout_s - 5) * 1000))
+        command = self._build_command(url, proxy_port, max(1000, (timeout_s - 5) * 1000))
 
         if self.sandbox_user:
             argv = ["sudo", "-n", "-u", self.sandbox_user, RUNNER_PATH, command]
             run_env, run_cwd = None, None
         else:
+            logger.warning("fetch_page: no sandbox_user; running as the daemon user (DEV ONLY)")
             argv = ["/bin/bash", "-lc", command]
             run_env = {
                 "PATH": "/usr/local/bin:/usr/bin:/bin",

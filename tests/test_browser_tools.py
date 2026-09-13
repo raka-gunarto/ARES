@@ -127,7 +127,7 @@ async def test_url_with_whitespace_refused():
 
 def test_url_is_shell_quoted_in_the_command():
     cmd = _tool()._build_command(
-        "https://ok.test/?q=x';rm -rf ~;'", "93.184.216.34", 20000
+        "https://ok.test/?q=x';rm -rf ~;'", 41234, 20000
     )
     # The dangerous text survives only inside a single quoted argv word.
     assert "rm -rf ~" in cmd
@@ -137,13 +137,21 @@ def test_url_is_shell_quoted_in_the_command():
     assert parts[-1] == "https://ok.test/?q=x';rm -rf ~;'"
 
 
-def test_command_pins_the_vetted_address():
-    cmd = _tool()._build_command("https://ok.test/", "93.184.216.34", 20000)
-    assert "MAP ok.test 93.184.216.34" in cmd
+def test_command_forces_every_connection_through_the_proxy():
+    """Page scripts and subresources reach hosts the URL check never saw."""
+    cmd = _tool()._build_command("https://ok.test/", 41234, 20000)
+    for flag in (
+        "--proxy-server=http://127.0.0.1:41234",
+        "'--proxy-bypass-list=<-loopback>'",
+        "--disable-quic",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    ):
+        assert flag in cmd, flag
+    assert "--host-resolver-rules" not in cmd
 
 
 def test_command_uses_a_throwaway_profile():
-    cmd = _tool()._build_command("https://ok.test/", "93.184.216.34", 20000)
+    cmd = _tool()._build_command("https://ok.test/", 41234, 20000)
     assert "mktemp -d" in cmd and "--user-data-dir=$d" in cmd
     assert "rm -rf $d" in cmd, "profile must not persist cookies between fetches"
 

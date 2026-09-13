@@ -19,12 +19,12 @@ WebSockets, and absolute-URI requests for plain http. Stdlib only.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import socket
 from typing import Callable
 from urllib.parse import urlparse, urlsplit
 
 from ares.core.utils.logging import get_logger
-from ares.plugins.tools.browser_tools import _is_forbidden_ip
 
 logger = get_logger(__name__)
 
@@ -32,8 +32,25 @@ ALLOWED_PORTS = frozenset({80, 443, 8080, 8443})
 MAX_HEAD_BYTES = 16384
 HEAD_TIMEOUT_S = 15
 CONNECT_TIMEOUT_S = 15
+# A hostile page must not be able to exhaust the daemon's fds with tunnels, or
+# pin them open forever: the proxy runs inside the daemon, not the browser uid.
+MAX_CONNECTIONS = 128
+IDLE_TIMEOUT_S = 600
 _CHUNK = 65536
 _HOP_HEADERS = ("proxy-connection", "proxy-authorization", "connection", "keep-alive")
+
+
+def _is_forbidden_ip(ip: str) -> bool:
+    """True for any address the daemon must not be able to reach via a URL.
+
+    Blocks the host-private TAP link (Home Assistant, dashboard, updater hook),
+    loopback, link-local incl. cloud metadata, and every other non-global range.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return not addr.is_global
 
 
 def _split_host_port(authority: str, default_port: int) -> tuple[str, int]:
@@ -119,6 +136,10 @@ class EgressProxy:
         self._conns.clear()
 
     async def _accept(self, reader, writer) -> None:
+        if len(self._conns) >= MAX_CONNECTIONS:
+            await self._refuse(writer, 503, "too many open connections")
+            writer.close()
+            return
         task = asyncio.current_task()
         if task is not None:
             self._conns.add(task)
@@ -229,12 +250,12 @@ class EgressProxy:
 async def _copy(reader, writer) -> None:
     try:
         while True:
-            chunk = await reader.read(_CHUNK)
+            chunk = await asyncio.wait_for(reader.read(_CHUNK), timeout=IDLE_TIMEOUT_S)
             if not chunk:
                 break
             writer.write(chunk)
             await writer.drain()
-    except (ConnectionError, OSError):
+    except (ConnectionError, OSError, asyncio.TimeoutError):
         pass
     finally:
         try:

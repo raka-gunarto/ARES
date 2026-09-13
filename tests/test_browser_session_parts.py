@@ -97,6 +97,19 @@ async def test_proxy_rewrites_absolute_uri_and_strips_hop_headers():
         server.close()
 
 
+async def test_proxy_caps_concurrent_connections(monkeypatch):
+    monkeypatch.setattr("ares.plugins.tools.browser_proxy.MAX_CONNECTIONS", 0)
+    proxy = EgressProxy(is_forbidden=lambda ip: False)
+    port = await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        reply = await asyncio.wait_for(reader.read(), timeout=5)
+        writer.close()
+        assert reply.startswith(b"HTTP/1.1 503")
+    finally:
+        await proxy.aclose()
+
+
 async def test_vet_rejects_a_name_with_any_private_answer():
     addresses, reason = await vet_destination(
         "localhost", 443, is_forbidden=lambda ip: ip.startswith("127.") or ip == "::1"

@@ -286,7 +286,12 @@ class BrowserSession:
         return self._operator_active
 
     async def operator_input(self, body: dict) -> None:
-        """Apply a live-view input event; using the browser takes control."""
+        """Apply a live-view input event; using the browser takes control.
+
+        Deliberately does not wait for `lock`: the operator always wins. An
+        agent action already under way may see its refs go stale and fail;
+        the next one is refused while the operator is in control.
+        """
         if not self.running:
             raise BrowserError("the browser is not running")
         self.set_operator(True)
@@ -344,21 +349,21 @@ class BrowserSession:
                 await self._cdp.send("Browser.close", timeout_s=5)
             except CDPError:
                 pass
+        # Closing the DevTools pipe makes Chromium exit on its own. That matters:
+        # the browser runs as ares-browser, which the daemon cannot signal, so
+        # terminate() below only reaches sudo (which relays SIGTERM; a SIGKILL
+        # would orphan the browser, so it is never sent).
+        if self._cdp is not None:
+            await self._cdp.aclose()
         if self._proc is not None and self._proc.returncode is None:
             try:
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except asyncio.TimeoutError:
-                # sudo relays the signal to the browser it runs.
                 try:
                     self._proc.terminate()
                     await asyncio.wait_for(self._proc.wait(), timeout=5)
                 except (ProcessLookupError, asyncio.TimeoutError):
-                    try:
-                        self._proc.kill()
-                    except ProcessLookupError:
-                        pass
-        if self._cdp is not None:
-            await self._cdp.aclose()
+                    logger.warning("browser: process did not exit after close")
         if self._proxy is not None:
             await self._proxy.aclose()
         self._proc = self._cdp = self._proxy = None
