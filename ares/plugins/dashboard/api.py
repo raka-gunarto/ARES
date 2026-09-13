@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from ares.core.utils.logging import get_logger
+from ares.plugins.dashboard.browser_api import register_browser_routes
 
 logger = get_logger(__name__)
 
@@ -62,6 +63,7 @@ def build_app(
     trace_file: str | Path | None = None,
     status_provider: Callable[[], Awaitable[dict]] | None = None,
     subagents_provider: Callable[[], Awaitable[list[dict]]] | None = None,
+    browser: Any = None,
 ) -> FastAPI:
     """Build the FastAPI dashboard app.
 
@@ -84,6 +86,8 @@ def build_app(
             someone is home). None if unavailable.
         subagents_provider: async callable () -> list[dict] of recent background
             runs (spec §20). None if subagents are disabled.
+        browser: the persistent BrowserSession (§6.1) for the live view, or
+            None when the stateful browser is off (no /api/browser routes).
 
     Returns:
         A configured FastAPI app.
@@ -101,6 +105,9 @@ def build_app(
             raise HTTPException(status_code=401, detail="unauthorized")
 
     api_auth = Depends(require_token)
+
+    if browser is not None:
+        register_browser_routes(app, api_auth, browser)
 
     @app.get("/")
     async def index() -> FileResponse:

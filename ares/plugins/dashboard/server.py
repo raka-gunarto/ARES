@@ -58,6 +58,7 @@ class DashboardSource(BaseSource):
         router: Any = None,
         subagent_manager: Any = None,
         home_provider: Any = None,
+        browser: Any = None,
     ) -> None:
         """Initialize the dashboard source.
 
@@ -84,6 +85,8 @@ class DashboardSource(BaseSource):
             home_provider: optional async zero-arg callable () -> bool telling
                 whether someone is home (the speaker channel's presence check),
                 surfaced in /api/status. None => home reads as unknown.
+            browser: optional persistent BrowserSession (§6.1) behind the
+                Browser tab's live view. None => no /api/browser routes.
 
         Raises:
             ConfigError: If `password` is missing/empty.
@@ -119,6 +122,7 @@ class DashboardSource(BaseSource):
         self.router = router
         self.subagent_manager = subagent_manager
         self.home_provider = home_provider
+        self.browser = browser
 
         self._start_time: float | None = None
         self._server: "uvicorn.Server | None" = None
@@ -217,6 +221,7 @@ class DashboardSource(BaseSource):
             trace_file=self.trace_file,
             status_provider=self._status_provider,
             subagents_provider=self._subagents_provider,
+            browser=self.browser,
         )
 
         config = uvicorn.Config(

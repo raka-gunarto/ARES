@@ -106,6 +106,8 @@ from ares.plugins.tools.core_tools import CORE_TOOLS
 from ares.plugins.tools.home_tools import HOME_TOOLS
 from ares.plugins.tools.memory_tools import MEMORY_TOOLS
 from ares.plugins.tools.selfedit_tools import PRCache, build_selfedit_tools
+from ares.plugins.tools.browser_session import BrowserSession
+from ares.plugins.tools.browser_tool import Browser
 from ares.plugins.tools.browser_tools import build_browser_tools
 from ares.plugins.tools.shell_tools import build_shell_tools
 from ares.plugins.tools.subagent_tools import SUBAGENT_TOOLS
@@ -236,10 +238,24 @@ async def main(config_path: str) -> None:
     # one audited sudo entry point (§15). Enabled via its own `browser` block so
     # it can be turned off without giving up the shell.
     browser_config = config.plugins.get("browser", {})
+    browser_session: BrowserSession | None = None
     if browser_config.get("enabled"):
         merged = {**shell_config, **browser_config}
         for t in build_browser_tools(merged):
             registry.register(t)
+        # The stateful browser (§6.1) needs its own uid for the login profile;
+        # in prod it is only offered once that user is configured.
+        browser_user = browser_config.get("browser_user", "")
+        if browser_user or os.environ.get("ARES_ENV", "dev") != "prod":
+            browser_session = BrowserSession(
+                browser_user=browser_user,
+                workdir=merged.get("workdir", ""),
+                binary=browser_config.get("browser_binary", ""),
+                profile_dir=browser_config.get("session_profile_dir", ".ares-browser"),
+                idle_close_s=int(browser_config.get("session_idle_close_s", 1800)),
+                sandbox_user=shell_config.get("sandbox_user", ""),
+            )
+            registry.register(Browser(browser_session))
 
     pr_cache = PRCache()
     selfedit_config = config.plugins.get("selfedit", {})
@@ -445,6 +461,7 @@ async def main(config_path: str) -> None:
                     if speaker_channel is not None
                     else None
                 ),
+                browser=browser_session,
             )
         )
 
@@ -485,6 +502,9 @@ async def main(config_path: str) -> None:
 
     if subagent_manager is not None:
         await subagent_manager.shutdown()
+
+    if browser_session is not None:
+        await browser_session.aclose()
 
     await llm.aclose()
     await tasks.aclose()

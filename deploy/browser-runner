@@ -1,0 +1,27 @@
+#!/bin/bash
+# ares-browser-runner — the sole sudo entry point from the `ares` daemon to the
+# `ares-browser` user, which runs the persistent Chromium session (spec §6.1).
+# Takes exactly one argument: the command string (a fixed template built by the
+# daemon). Scrubs the environment unconditionally, like ares-sbx-runner.
+#
+# The browser has its own user — not ares-sbx — because its profile holds the
+# operator's logged-in sessions. run_shell executes as ares-sbx, so a shared uid
+# would let any shell command read (and exfiltrate) those cookies.
+set -eu
+
+[ "$#" -eq 1 ] || { echo "usage: ares-browser-runner <command>" >&2; exit 64; }
+
+cd /home/ares-browser || exit 65
+
+# Hard backstops. A long-lived browser needs more CPU time than a one-shot shell;
+# the daemon also closes the session when idle.
+ulimit -t 28800    # CPU seconds (per process)
+ulimit -f 1048576  # max file size (blocks)
+ulimit -u 512      # max processes
+
+exec /usr/bin/env -i \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  HOME=/home/ares-browser \
+  LANG=C.UTF-8 \
+  SHELL=/bin/bash \
+  /bin/bash -lc "$1"

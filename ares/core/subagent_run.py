@@ -71,6 +71,9 @@ SUBAGENT_FORBIDDEN_TOOLS = frozenset(
         "read_source_write",
         "propose_change",
         "run_shell",
+        # The stateful browser may be signed in as the operator: acting in it is
+        # a sensitive action a nobody-is-watching run must never take (§20.2).
+        "browser",
         "spawn_subagent",
         "cancel_subagent",
         # A run has no business inspecting the subagent system: another run's

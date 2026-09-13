@@ -14,9 +14,11 @@ APP_DIR=/opt/ares/app
 ETC_DIR=/etc/ares
 STATE_DIR=/var/lib/ares
 SBX_HOME=/home/ares-sbx
+BROWSER_HOME=/home/ares-browser
 SUDOERS_FILE=/etc/sudoers.d/ares
 SYSTEMD_DIR=/etc/systemd/system
 RUNNER_DST=/usr/local/sbin/ares-sbx-runner
+BROWSER_RUNNER_DST=/usr/local/sbin/ares-browser-runner
 
 log() { printf '[provision] %s\n' "$*"; }
 die() { printf '[provision] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -41,6 +43,9 @@ ensure_user() {
 }
 ensure_user ares ""
 ensure_user ares-sbx "${SBX_HOME}"
+# The persistent browser (§6.1) gets its OWN user: its profile holds the
+# operator's logged-in sessions, and run_shell executes as ares-sbx.
+ensure_user ares-browser "${BROWSER_HOME}"
 ensure_user ares-deploy ""
 
 # 2. Filesystem contract (§14.2).
@@ -84,6 +89,9 @@ fi
 # sandbox scratch clone, owned by ares-sbx.
 install -d -o ares-sbx -g ares-sbx -m 0700 "${SBX_HOME}/scratch"
 
+# browser home: 0700 so neither ares nor ares-sbx can read the login profile.
+install -d -o ares-browser -g ares-browser -m 0700 "${BROWSER_HOME}"
+
 # 3. Install the sandbox runner OUTSIDE the app tree (§15). It is the sole sudo
 # entry point ares -> ares-sbx and it scrubs the environment (env -i). Placing
 # it in /usr/local/sbin (root-owned, 0755) keeps it out of the self-edit
@@ -91,15 +99,19 @@ install -d -o ares-sbx -g ares-sbx -m 0700 "${SBX_HOME}/scratch"
 # changing it requires re-running this provisioner.
 install -o root -g root -m 0755 "${APP_DIR}/deploy/sbx-runner" "${RUNNER_DST}"
 log "installed sandbox runner ${RUNNER_DST}"
+install -o root -g root -m 0755 "${APP_DIR}/deploy/browser-runner" "${BROWSER_RUNNER_DST}"
+log "installed browser runner ${BROWSER_RUNNER_DST}"
 
-# 4. The two narrow sudoers entries (§14.1). Nothing else gets sudo.
+# 4. The narrow sudoers entries (§14.1). Nothing else gets sudo.
 #  - ares may drop to ares-sbx ONLY via the runner (§15); no other command.
+#  - ares may drop to ares-browser ONLY via the browser runner (§6.1).
 #  - ares-deploy may restart the ares unit (the updater's one privileged action).
 # There is deliberately NO sudoers rule granting `ares` any root.
 umask 077
 cat > "${SUDOERS_FILE}.tmp" <<EOF
 # Managed by ARES deploy/provision.sh — do not edit by hand.
 ares ALL=(ares-sbx) NOPASSWD: ${RUNNER_DST}
+ares ALL=(ares-browser) NOPASSWD: ${BROWSER_RUNNER_DST}
 ares-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart ares
 EOF
 chmod 0440 "${SUDOERS_FILE}.tmp"

@@ -1,12 +1,51 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.15. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.16. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13 + v1.14 + v1.15. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.10 + v1.11 + v1.12 + v1.13 + v1.14 + v1.15 + v1.16. ***
+
+v1.16 (operator-authorised) — stateful browser. Reported: "I would like ARES to
+have a stateful browser, not just a stateless open page". Operator choices:
+persistent profile + dashboard live view; main agent only (subagents keep
+fetch_page).
+ - Tool: core `browser` (browser_tool.py) with actions open/read/click/type/
+   select/key/scroll/back/forward/close; each returns a fenced snapshot with
+   `[n]` refs (browser_dom.py). Real DevTools input (browser_input.py).
+ - Session (browser_session.py): one Chromium over --remote-debugging-pipe
+   (browser_cdp.py; every command times out, action cap 60s), popups followed,
+   downloads denied, Page.bringToFront on attach (a headless page that isn't
+   focused never renders: wheel input hangs and the screencast is empty — found
+   in the real e2e run), idle close 1800s, screencast only while viewed.
+ - Egress: browser_proxy.py EgressProxy — resolves itself, any non-global
+   answer or non-web port refused, connects only to the vetted IP; launch flags
+   force all traffic through it (<-loopback>, no QUIC, no non-proxied UDP).
+   Real e2e verified: fetch/WebSocket to 127.0.0.1/localhost/[::1]/0.0.0.0/
+   127.1/2130706433/10.x all refused by the proxy, zero hits on a local server.
+ - Separation: new `ares-browser` user + /usr/local/sbin/ares-browser-runner
+   (deploy/browser-runner, provision.sh, sudoers, ares.service BindPaths). prod
+   refuses unless browser_user is set and ≠ daemon uid and ≠ sandbox_user;
+   main.py registers the tool in prod only when browser_user is set.
+ - Dashboard: browser_api.py /api/browser/{state,launch,close,frame,control,
+   input}; Browser tab (live jpeg view, click/scroll/keys on the image, URL bar,
+   hidden text box for passwords, take control / hand back). Operator input
+   takes control; tool refuses meanwhile; auto hand-back after 600s idle.
+ - RULES (§4.11, prompt.py, ARES-SYSTEM-PROMPT.md): SENSITIVE ACTIONS names
+   acting in the browser as the person; RULES_REMINDER likewise.
+ - Subagents: "browser" in SUBAGENT_FORBIDDEN_TOOLS.
+ - Tests: test_browser_session_parts.py (proxy, CDP, launch/separation),
+   test_browser_tool.py (tool, session, dashboard routes). E2E run against
+   Chrome for Testing 153 in dev mode (example.com click-through, httpbin form
+   fill+submit, persistent cookie across close/reopen, live view click in the
+   dashboard UI).
+ - DEPLOY needs manual VM provisioning (VM stop + rw rootfs): ares-browser user
+   + 0700 home, runner + sudoers line, ares.service BindPaths, and
+   `browser_user: ares-browser` in /etc/ares/config.yaml.
+ - Known limits: session-only cookies are lost when the browser closes (idle or
+   restart); --no-sandbox, so uid separation + proxy are the containment.
 
 v1.15 (operator-authorised) — cursor-based chat replay + dashboard refresh.
 Reported: "add all of those frontend updates you suggested" (after the v1.14

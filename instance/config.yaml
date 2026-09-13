@@ -156,6 +156,12 @@ plugins:
     # browser_binary to override the default `chromium`.
     browser_timeout_default_s: 30
     browser_timeout_max_s: 90
+    # Stateful `browser` tool (§6.1): a persistent, logged-in Chromium running as
+    # its own user. Production: ares-browser (prod omits the tool if unset).
+    # "" = run as the daemon user (DEV ONLY).
+    browser_user: ""
+    session_profile_dir: .ares-browser   # relative to browser_user's $HOME
+    session_idle_close_s: 1800           # close when idle; the profile is kept
 
   # Background subagents (spec §20): bounded autonomous runs that report back
   # on the event bus. Read-only toolset; they cannot speak, act on the home,

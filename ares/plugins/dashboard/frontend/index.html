@@ -105,6 +105,14 @@ input,textarea{font-family:var(--mono);font-size:13px}
 .panel-hd{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);
   color:var(--muted);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
 .section-actions{display:flex;gap:8px;align-items:center}
+/* ---- browser live view ---- */
+.bv-bar{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.bv-bar .field{min-width:0}
+.bv-view{position:relative;background:#000;outline:none;cursor:crosshair;touch-action:manipulation}
+.bv-view:focus{box-shadow:inset 0 0 0 1px var(--teal2)}
+.bv-view img{display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none}
+.bv-note{color:var(--muted2);font-size:11px;padding:8px 12px}
+.bv-who{font-size:11px;letter-spacing:.06em;text-transform:none}
 
 .empty{color:var(--muted2);font-style:italic;padding:26px;text-align:center}
 
@@ -273,6 +281,7 @@ function makeApi(token, onUnauth){
     deny:(id)=>req(`/api/privileges/${encodeURIComponent(id)}/deny`,{method:"POST"}).then(r=>r.json()),
     prs:()=>req("/api/prs").then(r=>r.json()),
     trace:(offset)=>req("/api/trace"+(offset!=null?"?offset="+offset:"")).then(r=>r.json()),
+    browser:(path,body)=>browserReq(token,onUnauth,path,body),
   };
 }
 
@@ -435,6 +444,121 @@ function Subagents({api,toast}){
   </div>`;
 }
 
+/* ---------------- browser ---------------- */
+// The persistent browser ARES uses (§6.1). Watch it live, and take the wheel —
+// above all to sign in to a site yourself, so no password goes through ARES.
+async function browserReq(token,onUnauth,path,body){
+  const opts=body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)};
+  const res=await fetch("/api/browser/"+path,{...opts,headers:{...(opts.headers||{}),Authorization:`Bearer ${token}`}});
+  if(res.status===401){ onUnauth(); throw new Error("unauthorized"); }
+  if(res.status===404){ const e=new Error("unavailable"); e.unavailable=true; throw e; }
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.error||("HTTP "+res.status));
+  return data;
+}
+const BV_KEYS=new Set(["Enter","Tab","Backspace","Delete","Escape","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","PageUp","PageDown","Home","End"]);
+function Browser({api,toast}){
+  const [st,setSt]=useState(null);
+  const [frame,setFrame]=useState(null);
+  const [unavailable,setUnavailable]=useState(false);
+  const [url,setUrl]=useState("");
+  const [editing,setEditing]=useState(false);
+  const [typed,setTyped]=useState("");
+  const [hide,setHide]=useState(true);
+  const [busy,setBusy]=useState(false);
+  const viewRef=useRef(null);
+  const queue=useRef(Promise.resolve());
+
+  useEffect(()=>{
+    let alive=true, seq=0;
+    (async()=>{
+      while(alive){
+        if(document.hidden){ await new Promise(r=>setTimeout(r,1000)); continue; }
+        try{
+          const d=await api.browser("frame?since="+seq);
+          if(!alive) break;
+          if(d.state.frame_seq<seq) seq=0; // daemon restarted: its counter did too
+          setSt(d.state);
+          if(d.frame){ seq=d.frame.seq; setFrame(d.frame); }
+          if(!d.state.running){ setFrame(null); await new Promise(r=>setTimeout(r,2000)); }
+        }catch(e){
+          if(e.unavailable){ if(alive) setUnavailable(true); break; }
+          await new Promise(r=>setTimeout(r,2000));
+        }
+      }
+    })();
+    return ()=>{ alive=false; };
+  },[]);
+  useEffect(()=>{ if(st && !editing) setUrl(st.url||""); },[st&&st.url,editing]);
+
+  const call=async(path,body,okMsg)=>{
+    setBusy(true);
+    try{ const d=await api.browser(path,body); if(d&&"running" in d) setSt(d); if(okMsg) toast(okMsg,"ok"); }
+    catch(e){ toast(e.message,"err"); }
+    finally{ setBusy(false); }
+  };
+  // Input events go out one at a time so keystrokes arrive in order.
+  const send=(body)=>{
+    queue.current=queue.current.then(()=>api.browser("input",body)).catch(e=>toast(e.message,"err"));
+    setSt(s=>s?{...s,operator_in_control:true}:s);
+  };
+  const pageXY=(e)=>{
+    const img=viewRef.current&&viewRef.current.querySelector("img");
+    if(!img||!frame) return null;
+    const r=img.getBoundingClientRect();
+    return {x:(e.clientX-r.left)/r.width*(frame.width||1280), y:(e.clientY-r.top)/r.height*(frame.height||900)};
+  };
+  const onClick=(e)=>{ const p=pageXY(e); if(p){ send({type:"click",...p}); viewRef.current.focus(); } };
+  const onWheel=(e)=>{ if(!frame) return; e.preventDefault(); send({type:"scroll",dy:e.deltaY}); };
+  const onKey=(e)=>{
+    if(e.ctrlKey||e.metaKey||e.altKey) return;
+    if(BV_KEYS.has(e.key)){ e.preventDefault(); send({type:"key",key:e.key}); }
+    else if(e.key.length===1){ e.preventDefault(); send({type:"text",text:e.key}); }
+  };
+  const go=()=>{ const u=url.trim(); if(!u) return; setEditing(false); send({type:"navigate",url:u}); };
+  const typeIn=(enter)=>{ if(typed) send({type:"text",text:typed}); if(enter) send({type:"key",key:"Enter"}); setTyped(""); };
+
+  if(unavailable) return html`<div class="panel"><div class="panel-hd">Browser</div>
+    <div class="empty">The stateful browser is not enabled on this ARES.</div></div>`;
+  const running=st&&st.running, mine=st&&st.operator_in_control;
+  return html`<div class="panel">
+    <div class="panel-hd"><span>Browser ·
+      <span class="bv-who" style=${"color:"+(!running?"var(--muted2)":mine?"var(--amber)":"var(--teal2)")}>
+        ${!st?"…":!running?"stopped":mine?"you're in control":"ARES in control"}</span></span>
+      <div class="section-actions">
+        ${running && (mine
+          ? html`<button class="btn sm teal" disabled=${busy} onClick=${()=>call("control",{active:false},"Handed back to ARES")}>Hand back to ARES</button>`
+          : html`<button class="btn sm" disabled=${busy} onClick=${()=>call("control",{active:true})}>Take control</button>`)}
+        ${running
+          ? html`<button class="btn sm ghost" disabled=${busy} onClick=${()=>call("close",{},"Browser closed — logins kept")}>Close</button>`
+          : html`<button class="btn sm primary" disabled=${busy} onClick=${()=>call("launch",{})}>Launch</button>`}
+      </div></div>
+    ${running && html`<div class="bv-bar">
+      <button class="btn sm ghost" title="Back" onClick=${()=>send({type:"back"})}>←</button>
+      <button class="btn sm ghost" title="Forward" onClick=${()=>send({type:"forward"})}>→</button>
+      <input class="field" style="flex:1" value=${url} placeholder="https://…" autocomplete="off"
+        onFocus=${()=>setEditing(true)} onBlur=${()=>setEditing(false)}
+        onInput=${e=>setUrl(e.target.value)} onKeyDown=${e=>{if(e.key==="Enter"){e.preventDefault();go();e.target.blur();}}} />
+      <button class="btn sm" onClick=${go}>Go</button>
+    </div>`}
+    ${!running
+      ? html`<div class="empty">The browser isn't running. Launch it to sign in to a site, or ask ARES to open a page.<br/>Logins are saved in its profile and survive restarts.</div>`
+      : html`<div class="bv-view" tabIndex="0" ref=${viewRef} onClick=${onClick} onWheel=${onWheel} onKeyDown=${onKey}>
+          ${frame ? html`<img src=${"data:image/jpeg;base64,"+frame.data} alt="live browser view" draggable="false"/>`
+                  : html`<div class="empty">Waiting for the first frame…</div>`}
+        </div>
+        <div class="bv-bar">
+          <input class="field" style="flex:1" type=${hide?"password":"text"} value=${typed} autocomplete="off"
+            placeholder="Type into the focused field…" onInput=${e=>setTyped(e.target.value)}
+            onKeyDown=${e=>{if(e.key==="Enter"){e.preventDefault();typeIn(true);}}} />
+          <button class="btn sm ghost" title=${hide?"Show text":"Hide text"} onClick=${()=>setHide(h=>!h)}>${hide?"show":"hide"}</button>
+          <button class="btn sm" onClick=${()=>typeIn(false)}>Type</button>
+          ${["Enter","Tab","Backspace","Escape"].map(k=>html`<button key=${k} class="btn sm ghost" onClick=${()=>send({type:"key",key:k})}>${k}</button>`)}
+        </div>
+        <div class="bv-note">Click the page and type, or use the box above (hidden by default, for passwords). Using the browser takes control; ARES waits until you hand it back (or 10 minutes pass).</div>`}
+  </div>`;
+}
+
 /* ---------------- trace ---------------- */
 function traceLabel(r){
   const k=r.kind;
@@ -500,7 +624,7 @@ function Trace({api,toast}){
 }
 
 /* ---------------- app ---------------- */
-const TABS=[["chat","Chat"],["trace","Trace"],["memory","Memory"],["tasks","Tasks"],["subagents","Subagents"],["approvals","Approvals"],["prs","PRs"]];
+const TABS=[["chat","Chat"],["trace","Trace"],["memory","Memory"],["tasks","Tasks"],["subagents","Subagents"],["browser","Browser"],["approvals","Approvals"],["prs","PRs"]];
 
 function App(){
   const [token,setTok]=useState(()=>localStorage.getItem(TOKEN_KEY)||"");
@@ -597,6 +721,7 @@ function App(){
     : tab==="memory"?html`<${Memory} api=${api} toast=${showToast}/>`
     : tab==="tasks"?html`<${Tasks} api=${api} toast=${showToast}/>`
     : tab==="subagents"?html`<${Subagents} api=${api} toast=${showToast}/>`
+    : tab==="browser"?html`<${Browser} api=${api} toast=${showToast}/>`
     : tab==="approvals"?html`<${Approvals} api=${api} toast=${showToast} onCount=${setPending}/>`
     : html`<${PRs} api=${api} toast=${showToast}/>`;
 

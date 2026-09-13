@@ -27,8 +27,10 @@ ReadWritePaths=/var/lib/ares
 # `cd /home/ares-sbx: Permission denied`. So hide other homes with a tmpfs but
 # bind the sandbox's own home back in (rw for its scratch clone). File perms
 # still bar the ares user from writing it (0755 ares-sbx, scratch 0700).
+# The persistent browser's home (§6.1) is bound in the same way, for the same
+# reason: its runner cds there. It is 0700 ares-browser, so ares cannot read it.
 ProtectHome=tmpfs
-BindPaths=/home/ares-sbx
+BindPaths=/home/ares-sbx /home/ares-browser
 PrivateTmp=true
 
 [Install]

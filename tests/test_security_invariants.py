@@ -94,6 +94,7 @@ def test_subagent_allowlist_never_grants_a_tool_that_acts():
         "request_privilege",
         "open_pr",
         "run_shell",
+        "browser",
         "spawn_subagent",
         "cancel_subagent",
     ):
