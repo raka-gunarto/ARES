@@ -226,7 +226,7 @@ def _nudges(call):
 
     return sum(
         1 for m in call["messages"]
-        if m.get("role") == "system" and m.get("content") == PROGRESS_NUDGE
+        if m.get("role") == "user" and m.get("content") == PROGRESS_NUDGE
     )
 
 

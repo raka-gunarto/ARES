@@ -576,7 +576,9 @@ forced-final turn.
 
 **Progress nudge (v1.20).** On a user-initiated event, after 4 tool rounds in a
 row in which no `speak` succeeded, the agent appends the fixed `PROGRESS_NUDGE`
-system message (`prompt.py`): tell the person in one short sentence what you have
+(`prompt.py`) as a user-role message marked automatic, like the tool-budget note.
+It is not a system message because providers such as DeepSeek hoist every system
+message into the prompt header, where a mid-loop note loses its place. It asks: tell the person in one short sentence what you have
 found or are doing, alongside the next tool call, without repeating an earlier
 update, or just answer if done. The count restarts after a nudge and after any
 round that spoke. Ambient events are never nudged. Like `RULES_REMINDER` it is a
@@ -2336,7 +2338,9 @@ an update when a turn needs several calls, but it is read once at the top of the
 turn. In the trace of 187 user turns with 3+ model calls, most long ones never
 spoke mid-loop: a 45-round food order spoke zero times, a 32-round TV request
 once. After 4 silent tool rounds on a user's request, the loop now appends a
-fixed system nudge asking for a one-sentence update. The RULES block is unchanged
+fixed nudge asking for a one-sentence update. It was first sent as a system
+message, which the model ignored live (DeepSeek hoists system messages into the
+header); it is now a user-role note marked automatic. The RULES block is unchanged
 and no dependency was added.
 
 *End of specification.*

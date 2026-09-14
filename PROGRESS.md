@@ -44,11 +44,14 @@ RULES line — "bro I want fried chicken fool" 45 rounds / 0 speaks, "try playin
 Rick and morty again" 32 / 1, a forecast request 17 / 1 at the end. Per the
 prompt-levers finding, a standing instruction read at the top of the turn does
 not steer mid-loop behaviour, so the fix is in the loop: `PROGRESS_NUDGE` (fixed
-constant in `prompt.py`) appended as a system message after 4 consecutive tool
-rounds with no successful `speak`, user-initiated events only; the counter
+constant in `prompt.py`) appended after 4 consecutive tool rounds with no
+successful `speak`, user-initiated events only; the counter
 restarts after a nudge or a spoken round. `agent.py` kept at 400 lines by
 collapsing two call sites. Tests: nudge cadence, reset on speak, never on
 ambient events. Spec §3, §4.10, Appendix A. RULES unchanged; no new dependency.
+Live check 1 (f2a9d5f, system role): a 6-round memory-read turn ignored the
+nudge. DeepSeek's chat template hoists all system messages into the header, so
+the nudge became a user-role note marked automatic, like the tool-budget note.
 
 v1.19 (operator-authorised) — dashboard auth watch. Reported: "I want the web
 dashboard to log all new unauthenticated requests to it and all bad tokens. And

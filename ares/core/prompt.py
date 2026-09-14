@@ -91,14 +91,18 @@ RULES_REMINDER = (
 # Appended to a user's request after several tool rounds with no `speak` (§4.10).
 # RULES already asks for an update when a turn takes several calls, but it is read
 # once at the top of the turn and was almost never followed mid-loop: a 45-round
-# food order gave the person no update at all, a 32-round TV request one. Like
-# RULES, a fixed code constant — never sourced from or overridable by config.
+# food order gave the person no update at all, a 32-round TV request one. Sent as
+# a user-role message, like the tool-budget note: DeepSeek's chat template hoists
+# every system message into the header, so a mid-loop system message loses its
+# place and was ignored live. Like RULES, a fixed code constant — never sourced
+# from or overridable by config.
 PROGRESS_NUDGE = (
-    "[SYSTEM NOTE] You have worked through several steps of the person's request "
-    "without telling them anything, and they are waiting in silence. If there is "
-    "more to do, call `speak` with one short sentence on what you have found or "
-    "are doing now, in the same reply as your next tool call, then keep working. "
-    "Do not repeat an earlier update. If you are already done, just answer."
+    "[SYSTEM NOTE — automatic, not typed by the person] You have worked through "
+    "several steps of the person's request without telling them anything, and "
+    "they are waiting in silence. If there is more to do, call `speak` with one "
+    "short sentence on what you have found or are doing now, in the same reply as "
+    "your next tool call, then keep working. Do not repeat an earlier update. If "
+    "you are already done, just answer the original request."
 )
 
 

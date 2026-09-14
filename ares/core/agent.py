@@ -341,7 +341,7 @@ class Agent:
                 # A person waiting on a long turn gets progress, not silence.
                 quiet_rounds = 0 if len(spoken_texts) > spoken_before else quiet_rounds + 1
                 if user_initiated and quiet_rounds >= _UPDATE_EVERY:
-                    messages.append({"role": "system", "content": PROGRESS_NUDGE})
+                    messages.append({"role": "user", "content": PROGRESS_NUDGE})
                     quiet_rounds = 0
 
                 if iterations >= self.max_tool_iterations:
