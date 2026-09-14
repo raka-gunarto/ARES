@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from ares.core.utils.logging import get_logger
+from ares.plugins.dashboard.auth_watch import Alert, AuthWatch, AuthWatchMiddleware
 from ares.plugins.dashboard.browser_api import register_browser_routes
 
 logger = get_logger(__name__)
@@ -64,6 +65,7 @@ def build_app(
     status_provider: Callable[[], Awaitable[dict]] | None = None,
     subagents_provider: Callable[[], Awaitable[list[dict]]] | None = None,
     browser: Any = None,
+    auth_alert: Alert | None = None,
 ) -> FastAPI:
     """Build the FastAPI dashboard app.
 
@@ -88,11 +90,15 @@ def build_app(
             runs (spec §20). None if subagents are disabled.
         browser: the persistent BrowserSession (§6.6) for the live view, or
             None when the stateful browser is off (no /api/browser routes).
+        auth_alert: async callable (title, message) that pushes an alert to the
+            operator about a request without a valid token (§17.4). Such
+            requests are always logged; None means log only.
 
     Returns:
         A configured FastAPI app.
     """
     app = FastAPI(title="ARES Dashboard")
+    app.add_middleware(AuthWatchMiddleware, watch=AuthWatch(token, auth_alert))
 
     def require_token(request: Request) -> None:
         """Require a valid `Authorization: Bearer <token>` header.

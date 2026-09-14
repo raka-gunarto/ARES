@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.18
+# ARES — Implementation Specification v1.19
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -247,6 +247,7 @@ ares/
         __init__.py
         server.py        # DashboardSource: config validation + uvicorn §17
         api.py           # FastAPI routes
+        auth_watch.py    # log + alert on requests without a valid token §17.4
         browser_api.py   # /api/browser/* routes (live view + control)
         channel.py       # WebChannel (per-user replay buffer)
         frontend/        # UI source: Preact via htm, no external CDN
@@ -1100,7 +1101,9 @@ ports against temp files — do not attempt live sample streaming in v1.
 ### 7.6 `channels/push_ntfy.py`
 
 `NtfyChannel(type=PUSH)`: POST the message to `{server}/{topic}` with optional
-auth token header. Returns False on non-2xx.
+auth token header. Returns False on non-2xx. `notify(user_id, message, title?,
+tags?)` is the same POST with ntfy's `Title`/`Tags` headers; `deliver` calls it
+without them. The dashboard's auth alerts (§17.4) use it.
 
 ### 7.7 `critical/safety.py`
 
@@ -1809,6 +1812,32 @@ badge shows where a reply would land right now (web presence / speaker / push)
 and the channel that received the last one, from `/api/status`. Token entered
 once, kept in `localStorage`.
 
+### 17.4 Auth watch (`auth_watch.py`, v1.19)
+
+The dashboard is reachable from the internet through the tunnel, so the
+operator is told about anyone knocking. A pure ASGI middleware (not
+`BaseHTTPMiddleware`, which would break the long-poll routes) sees every HTTP
+request before routing and classifies it:
+
+- a valid `Authorization: Bearer <token>` (constant-time compare) → nothing;
+- any other `Authorization` header, on any path → **bad token**;
+- no header, on any path other than the lock screen (`/`, `/api/version`, which
+  the operator's own browser fetches before it has a token) → **unauthenticated**
+  (protected routes and unknown paths alike).
+
+Every reported request is logged at WARNING with method, path, client
+(`CF-Connecting-IP` when present, plus the socket peer) and user agent; path and
+user agent are `repr`-quoted and clipped so they cannot forge log lines. The
+presented token is never logged or pushed (it is most likely a typo of the
+password). When `push_ntfy` is enabled and user `primary` has an `ntfy_topic`,
+`instance/main.py` wires an alert callable and the first request per
+(kind, client) in 900 s is also pushed (`Title: ARES dashboard: <kind>`,
+`Tags: warning`), carrying the count suppressed since that client's last alert.
+Pushes are capped at 12 per hour overall and the per-client table at 1024
+entries, so a scan from many addresses can't flood the phone or grow memory.
+An alert runs as a background task with a 15 s timeout; a failure is logged and
+never affects the request. Detection does not change any response.
+
 ---
 
 ## 18. Self-Edit → Pull Request Workflow (`plugins/tools/selfedit_tools.py`)
@@ -2280,5 +2309,14 @@ binary's own major version (read with `--version` at launch; fallback 150) witho
 the window. Egress proxy, user separation and the operator's role in solving an
 interactive challenge (§17) are unchanged. No new dependency; the RULES block is
 unchanged.
+
+v1.19 (operator-authorised) adds the dashboard auth watch (§17.4). Reported: "I
+want the web dashboard to log all new unauthenticated requests to it and all bad
+tokens. And then if the ntfy topic is configured, push a notif there too". The
+dashboard is reachable through the tunnel, and a failed request left no trace.
+Every request without a valid token (except a tokenless lock-screen load) is now
+logged. It is also pushed through ntfy, deduplicated per client for 15 minutes
+and capped at 12 an hour. `NtfyChannel` gains `notify` with title/tags (§7.6).
+No new dependency; the RULES block is unchanged.
 
 *End of specification.*

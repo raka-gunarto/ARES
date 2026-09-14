@@ -1,15 +1,15 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.18. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.19. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.18. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.19. Nothing is in progress. ***
 
-Last change: v1.18 (operator-authorised) — web tools present as ordinary desktop
-Chromium so Cloudflare bot checks let them through. Details under `## History`.
+Last change: v1.19 (operator-authorised) — dashboard auth watch: requests without
+a valid token are logged and pushed via ntfy. Details under `## History`.
 
 Next action: none queued. New work starts from an operator request; spec changes
 are operator-authorised, bump the version, and add an entry to spec Appendix A.
@@ -34,6 +34,21 @@ Open (non-blocking):
 
 Newest first. Entries are moved here verbatim from `## Current` when
 superseded.
+
+v1.19 (operator-authorised) — dashboard auth watch. Reported: "I want the web
+dashboard to log all new unauthenticated requests to it and all bad tokens. And
+then if the ntfy topic is configured, push a notif there too". New
+`dashboard/auth_watch.py`: pure ASGI middleware (BaseHTTPMiddleware would break
+the long-polls) classifying every request as bad token (any wrong Authorization
+header, any path) or unauthenticated (no header, any path except the lock screen
+`/` and `/api/version`). Each is logged at WARNING with method, repr'd path,
+CF-Connecting-IP + peer, and repr'd UA; the token itself is never logged. Alerts
+via `NtfyChannel.notify` (new; Title/Tags headers, `deliver` delegates) wired in
+`instance/main.py` only when push_ntfy is enabled and `primary` has a topic:
+first per (kind, client) per 900 s with a suppressed count, 12/hour global cap,
+1024-entry client table, 15 s background task. Tests:
+`tests/test_dashboard_auth_watch.py`. Spec §3, §7.6, §17.4, Appendix A. No new
+dependency; RULES unchanged.
 
 v1.18 (operator-authorised) — pass Cloudflare bot checks. Reported: "we're not
 passing cloudflare bot checks. make us pass it. i just want ares to order food for
@@ -714,6 +729,11 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-09-14 (v1.19): a tokenless `/` or `/api/version` is not reported. The
+  operator's own browser loads both on every visit before it sends a token, so
+  reporting them would push the operator about themselves. A wrong token on them
+  is still reported. "New" is read as deduplicated: every request is logged, but
+  only the first per client per 15 min is pushed.
 - 2026-09-13 (v1.18): the browser's disguise stops at "ordinary desktop Chromium of
   its real version" — no fake OS, GPU, plugins or other-browser UA. It is enough for
   Cloudflare today, stays truthful about the engine, and never drifts from the

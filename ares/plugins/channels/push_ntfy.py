@@ -45,6 +45,12 @@ class NtfyChannel(BaseChannel):
         Returns:
             True on success (2xx status), False otherwise.
         """
+        return await self.notify(user_id, message)
+
+    async def notify(
+        self, user_id: str, message: str, title: str | None = None, tags: str | None = None
+    ) -> bool:
+        """Push `message` to the user's topic, with an optional ntfy title and tags."""
         topic = self.topics.get(user_id)
         if not topic:
             logger.warning(f"No ntfy topic configured for user {user_id}")
@@ -54,6 +60,10 @@ class NtfyChannel(BaseChannel):
         headers: dict[str, str] = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        if title:
+            headers["Title"] = title
+        if tags:
+            headers["Tags"] = tags
 
         try:
             async with httpx.AsyncClient() as client:

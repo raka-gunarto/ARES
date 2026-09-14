@@ -59,6 +59,7 @@ class DashboardSource(BaseSource):
         subagent_manager: Any = None,
         home_provider: Any = None,
         browser: Any = None,
+        auth_alert: Any = None,
     ) -> None:
         """Initialize the dashboard source.
 
@@ -87,6 +88,9 @@ class DashboardSource(BaseSource):
                 surfaced in /api/status. None => home reads as unknown.
             browser: optional persistent BrowserSession (§6.6) behind the
                 Browser tab's live view. None => no /api/browser routes.
+            auth_alert: optional async (title, message) callable that pushes an
+                alert about a request without a valid token (§17.4); such
+                requests are logged either way.
 
         Raises:
             ConfigError: If `password` is missing/empty.
@@ -123,6 +127,7 @@ class DashboardSource(BaseSource):
         self.subagent_manager = subagent_manager
         self.home_provider = home_provider
         self.browser = browser
+        self.auth_alert = auth_alert
 
         self._start_time: float | None = None
         self._server: "uvicorn.Server | None" = None
@@ -222,6 +227,7 @@ class DashboardSource(BaseSource):
             status_provider=self._status_provider,
             subagents_provider=self._subagents_provider,
             browser=self.browser,
+            auth_alert=self.auth_alert,
         )
 
         config = uvicorn.Config(

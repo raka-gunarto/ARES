@@ -262,6 +262,14 @@ Once `ares.service` is up, browse to `http://<vm-tailscale-ip>:8788`. Enter the
   root-access gate.
 - **PRs** — links to ARES's open self-edit pull requests.
 
+Every request without a valid token is logged as `dashboard auth: bad token`
+or `dashboard auth: unauthenticated` in the `ares` journal, with the client IP
+(`CF-Connecting-IP` behind a Cloudflare tunnel) and user agent. Loading the lock
+screen (`/`, `/api/version`) without a token isn't reported. If `push_ntfy` is
+enabled and your user has an `ntfy_topic`, the first such request from each client
+also pushes a notification: again after 15 minutes if it keeps going, and at most
+12 an hour overall. `journalctl -u ares | grep 'dashboard auth'` shows them all.
+
 Keep the dashboard on the tailnet/LAN only. There's no HTTPS termination in ARES
 (spec §out-of-scope) — Tailscale gives you the encrypted transport.
 

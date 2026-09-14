@@ -157,15 +157,15 @@ async def main(config_path: str) -> None:
         router.register(ConsoleChannel())
 
     push_config = config.plugins.get("push_ntfy", {})
+    ntfy: NtfyChannel | None = None
     if push_config.get("enabled"):
         topics = {uid: u.ntfy_topic for uid, u in config.users.items() if u.ntfy_topic}
-        router.register(
-            NtfyChannel(
-                server=push_config.get("server", ""),
-                token=push_config.get("token"),
-                topics=topics,
-            )
+        ntfy = NtfyChannel(
+            server=push_config.get("server", ""),
+            token=push_config.get("token"),
+            topics=topics,
         )
+        router.register(ntfy)
 
     llm = LLMClient(
         base_url=config.llm.base_url,
@@ -424,6 +424,13 @@ async def main(config_path: str) -> None:
                     else None
                 ),
                 browser=browser_session,
+                # §17.4: requests without a valid token are pushed to the
+                # operator when they have an ntfy topic; logged regardless.
+                auth_alert=(
+                    (lambda title, msg: ntfy.notify("primary", msg, title=title, tags="warning"))
+                    if ntfy is not None and ntfy.topics.get("primary")
+                    else None
+                ),
             )
         )
 
