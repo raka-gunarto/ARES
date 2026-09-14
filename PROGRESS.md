@@ -1,15 +1,16 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.19. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.20. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.19. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.20. Nothing is in progress. ***
 
-Last change: v1.19 (operator-authorised) — dashboard auth watch: requests without
-a valid token are logged and pushed via ntfy. Details under `## History`.
+Last change: v1.20 (operator-authorised) — progress nudge: after 4 silent tool
+rounds on a user's request, ARES is prompted to speak an update. Details under
+`## History`.
 
 Next action: none queued. New work starts from an operator request; spec changes
 are operator-authorised, bump the version, and add an entry to spec Appendix A.
@@ -34,6 +35,20 @@ Open (non-blocking):
 
 Newest first. Entries are moved here verbatim from `## Current` when
 superseded.
+
+v1.20 (operator-authorised) — progress nudge. Reported: "remind ARES a little
+more to give me updates as its working on a direct request from me, so I know
+whats going on in between multiple tool calls". Trace (to 2026-09-14): of 187
+user turns with 3+ model calls, long ones almost never spoke mid-loop despite the
+RULES line — "bro I want fried chicken fool" 45 rounds / 0 speaks, "try playing
+Rick and morty again" 32 / 1, a forecast request 17 / 1 at the end. Per the
+prompt-levers finding, a standing instruction read at the top of the turn does
+not steer mid-loop behaviour, so the fix is in the loop: `PROGRESS_NUDGE` (fixed
+constant in `prompt.py`) appended as a system message after 4 consecutive tool
+rounds with no successful `speak`, user-initiated events only; the counter
+restarts after a nudge or a spoken round. `agent.py` kept at 400 lines by
+collapsing two call sites. Tests: nudge cadence, reset on speak, never on
+ambient events. Spec §3, §4.10, Appendix A. RULES unchanged; no new dependency.
 
 v1.19 (operator-authorised) — dashboard auth watch. Reported: "I want the web
 dashboard to log all new unauthenticated requests to it and all bad tokens. And
@@ -729,6 +744,12 @@ post-v1 scope (spec §1 out-of-scope list is binding).
 
 ## Decisions
 
+- 2026-09-14 (v1.20): the nudge fires after 4 silent rounds, not 3. Most home-control
+  requests finish in 3–5 rounds; at 3 nearly every one would gain a mid-turn
+  update the operator didn't ask for, while 4 still gives a long browser or
+  research turn an update about every 4 rounds. RULES wording is left
+  unchanged: the operator asked for more reminding, not a RULES rewrite, and the
+  measured failure is salience mid-loop, which a RULES edit wouldn't fix.
 - 2026-09-14 (v1.19): a tokenless `/` or `/api/version` is not reported. The
   operator's own browser loads both on every visit before it sends a token, so
   reporting them would push the operator about themselves. A wrong token on them

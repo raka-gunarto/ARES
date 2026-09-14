@@ -11,7 +11,7 @@ if typing.TYPE_CHECKING:
 
 from ares.core.event import Event
 from ares.core.llm.client import LLMClient
-from ares.core.prompt import RULES_REMINDER, build_system_prompt, is_ignore
+from ares.core.prompt import PROGRESS_NUDGE, RULES_REMINDER, build_system_prompt, is_ignore
 from ares.core.router import ResponseRouter
 from ares.core.session import SessionManager
 from ares.core.tool import ToolContext, ToolRegistry, ToolResult
@@ -41,6 +41,8 @@ _DEFAULT_OUTPUT_RESERVE = 4096
 _MIN_INPUT_BUDGET = 2048
 # Reinject the RULES reminder every N tool iterations during a long loop.
 _REMINDER_EVERY = 20
+# Nudge for a progress update after this many tool rounds in a row without `speak`.
+_UPDATE_EVERY = 4
 
 
 def estimate_tokens(text: str) -> int:
@@ -232,6 +234,7 @@ class Agent:
             active = self.registry.core_tools()
             active_names = {t.name for t in active}
             iterations = 0
+            quiet_rounds = 0
             spoke = False
             spoken_texts: list[str] = []
             notified = False
@@ -261,6 +264,7 @@ class Agent:
                     break
 
                 messages.append(reply)
+                spoken_before = len(spoken_texts)
 
                 for tc in tool_calls:
                     name = tc["function"]["name"]
@@ -304,14 +308,8 @@ class Agent:
                             except Exception as e:
                                 result = ToolResult(False, f"error: {e}")
 
-                    self.tracer.emit(
-                        "tool",
-                        event_id=event.id,
-                        name=name,
-                        arguments=args,
-                        ok=result.ok,
-                        result=result.content,
-                    )
+                    self.tracer.emit("tool", event_id=event.id, name=name, arguments=args,
+                                     ok=result.ok, result=result.content)
 
                     if name == "speak" and result.ok:
                         spoke = True
@@ -340,13 +338,15 @@ class Agent:
                 if iterations % _REMINDER_EVERY == 0:
                     messages.append({"role": "system", "content": RULES_REMINDER})
 
+                # A person waiting on a long turn gets progress, not silence.
+                quiet_rounds = 0 if len(spoken_texts) > spoken_before else quiet_rounds + 1
+                if user_initiated and quiet_rounds >= _UPDATE_EVERY:
+                    messages.append({"role": "system", "content": PROGRESS_NUDGE})
+                    quiet_rounds = 0
+
                 if iterations >= self.max_tool_iterations:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": "Tool budget exhausted. Respond now without tools.",
-                        }
-                    )
+                    messages.append({"role": "user",
+                                     "content": "Tool budget exhausted. Respond now without tools."})
                     messages.append({"role": "system", "content": RULES_REMINDER})
                     final_reply = await self._chat(messages, tools=None)
                     final_text = final_reply.get("content") or ""

@@ -221,6 +221,50 @@ async def test_rules_reminder_is_reinjected_during_long_tool_loops():
     assert reminders(llm.calls[-1]) == 2  # plus the forced-final reminder
 
 
+def _nudges(call):
+    from ares.core.prompt import PROGRESS_NUDGE
+
+    return sum(
+        1 for m in call["messages"]
+        if m.get("role") == "system" and m.get("content") == PROGRESS_NUDGE
+    )
+
+
+async def test_long_user_request_is_nudged_for_a_progress_update():
+    """After 4 tool rounds without `speak` the agent asks for an update (§4.10)."""
+    work = make_tool_call_message("cX", "get_active_tasks", {})
+    llm = FakeLLM([work] * 9 + [{"role": "assistant", "content": "done"}])
+    agent, _channel, _ = build_agent(llm, max_tool_iterations=20)
+    await asyncio.wait_for(agent.handle(make_cli_event("do a long thing")), timeout=5)
+
+    assert _nudges(llm.calls[3]) == 0  # the 4th call precedes round 4
+    assert _nudges(llm.calls[4]) == 1
+    assert _nudges(llm.calls[8]) == 2  # counter restarts after each nudge
+
+
+async def test_speaking_resets_the_progress_nudge():
+    work = make_tool_call_message("cX", "get_active_tasks", {})
+    update = make_tool_call_message("cS", "speak", {"message": "still looking"})
+    llm = FakeLLM([work, work, work, update, work, work, work,
+                   {"role": "assistant", "content": "done"}])
+    agent, channel, _ = build_agent(llm, max_tool_iterations=20)
+    await asyncio.wait_for(agent.handle(make_cli_event("do a long thing")), timeout=5)
+
+    assert all(_nudges(call) == 0 for call in llm.calls)
+    assert channel.messages[0] == "still looking"
+
+
+async def test_ambient_events_are_never_nudged():
+    work = make_tool_call_message("cX", "get_active_tasks", {})
+    llm = FakeLLM([work] * 6 + [{"role": "assistant", "content": "IGNORE"}])
+    agent, _channel, _ = build_agent(llm, max_tool_iterations=20)
+    evt = Event(id=new_id(), source="home_assistant", type="state_change",
+                payload={"entity_id": "light.x"}, priority=Priority.NORMAL, user_id="primary")
+    await asyncio.wait_for(agent.handle(evt), timeout=5)
+
+    assert all(_nudges(call) == 0 for call in llm.calls)
+
+
 # ---- LLM client retries -------------------------------------------------------
 
 async def test_llm_client_retries_a_rate_limit_then_succeeds(monkeypatch):

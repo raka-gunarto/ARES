@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.19
+# ARES — Implementation Specification v1.20
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -168,7 +168,7 @@ ares/
       session.py         # Session, SessionManager
       tool.py            # BaseTool, ToolRegistry, ToolResult, ToolContext
       agent.py           # Agent: event → prompt → LLM tool loop → done
-      prompt.py          # system prompt assembly, RULES, RULES_REMINDER
+      prompt.py          # system prompt assembly, RULES, RULES_REMINDER, PROGRESS_NUDGE
       config.py          # Config loading, !secret resolution, typed models, prod tripwires
       secrets.py         # BaseSecretStore, EnvSecretStore
       trace.py           # Tracer: rotating JSONL activity trace          §4.14
@@ -574,6 +574,14 @@ result appended to `messages` is capped at ~`context_window/8` tokens. The
 `RULES_REMINDER` constant is appended every 20 iterations and before the
 forced-final turn.
 
+**Progress nudge (v1.20).** On a user-initiated event, after 4 tool rounds in a
+row in which no `speak` succeeded, the agent appends the fixed `PROGRESS_NUDGE`
+system message (`prompt.py`): tell the person in one short sentence what you have
+found or are doing, alongside the next tool call, without repeating an earlier
+update, or just answer if done. The count restarts after a nudge and after any
+round that spoke. Ambient events are never nudged. Like `RULES_REMINDER` it is a
+code constant, never config.
+
 `handle(event)` steps — implement in this order, nothing more:
 
 1. `session = sessions.touch(...)` per the channel mapping in §4.6.
@@ -599,7 +607,9 @@ forced-final turn.
      `ToolResult(ok=False, content="error: ...")` (never raise). Append the
      assistant message and (capped) tool results to `messages`. If a call was
      `search_tools`, extend `active` with the returned tools (deduped).
-     `iterations += 1`; reinject `RULES_REMINDER` every 20 iterations; if
+     `iterations += 1`; reinject `RULES_REMINDER` every 20 iterations; on a
+     user-initiated event append `PROGRESS_NUDGE` after 4 rounds in a row without
+     a successful `speak` (see above); if
      `iterations >= max_tool_iterations`, append a user message `"Tool budget
      exhausted. Respond now without tools."` plus `RULES_REMINDER` and loop once
      more with `tools=None`, then treat as final.
@@ -2318,5 +2328,15 @@ Every request without a valid token (except a tokenless lock-screen load) is now
 logged. It is also pushed through ntfy, deduplicated per client for 15 minutes
 and capped at 12 an hour. `NtfyChannel` gains `notify` with title/tags (§7.6).
 No new dependency; the RULES block is unchanged.
+
+v1.20 (operator-authorised) adds the progress nudge (§4.10). Reported: "remind
+ARES a little more to give me updates as its working on a direct request from me,
+so I know whats going on in between multiple tool calls". RULES already asks for
+an update when a turn needs several calls, but it is read once at the top of the
+turn. In the trace of 187 user turns with 3+ model calls, most long ones never
+spoke mid-loop: a 45-round food order spoke zero times, a 32-round TV request
+once. After 4 silent tool rounds on a user's request, the loop now appends a
+fixed system nudge asking for a one-sentence update. The RULES block is unchanged
+and no dependency was added.
 
 *End of specification.*
