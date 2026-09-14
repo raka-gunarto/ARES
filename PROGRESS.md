@@ -52,6 +52,13 @@ ambient events. Spec §3, §4.10, Appendix A. RULES unchanged; no new dependency
 Live check 1 (f2a9d5f, system role): a 6-round memory-read turn ignored the
 nudge. DeepSeek's chat template hoists all system messages into the header, so
 the nudge became a user-role note marked automatic, like the tool-budget note.
+Live check 2 (661945e): the model answered the nudge, but as text beside its tool
+calls ("Still working through the files — three of five read so far"), which is
+never delivered. 468 of 1197 historical tool rounds on user turns carry such
+narration, so delivering all of it would be too chatty. Only the reply right after
+a nudge has its text spoken. Texts spoken in answer to a nudge are kept out of
+step 8's `unspoken_final` comparison: a test showed a short final after a longer
+update was being swallowed. `agent.py` is 397 lines.
 
 v1.19 (operator-authorised) — dashboard auth watch. Reported: "I want the web
 dashboard to log all new unauthenticated requests to it and all bad tokens. And

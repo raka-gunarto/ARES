@@ -254,6 +254,34 @@ async def test_speaking_resets_the_progress_nudge():
     assert channel.messages[0] == "still looking"
 
 
+async def test_an_update_written_as_text_after_a_nudge_is_delivered():
+    """Live, the model answered the nudge in text beside its tool call, not via speak."""
+    work = make_tool_call_message("cX", "get_active_tasks", {})
+    narrated = dict(make_tool_call_message("cY", "get_active_tasks", {}),
+                    content="Three of five files read so far.")
+    later = dict(make_tool_call_message("cZ", "get_active_tasks", {}), content="Let me check.")
+    llm = FakeLLM([work] * 4 + [narrated, later, {"role": "assistant", "content": "All done: five files."}])
+    agent, channel, _ = build_agent(llm, max_tool_iterations=20)
+    await asyncio.wait_for(agent.handle(make_cli_event("do a long thing")), timeout=5)
+
+    # Only the reply answering the nudge is spoken; other narration stays internal.
+    assert channel.messages == ["Three of five files read so far.", "All done: five files."]
+
+
+async def test_a_spoken_update_never_swallows_a_shorter_final_answer():
+    work = make_tool_call_message("cX", "get_active_tasks", {})
+    update = {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "cS", "type": "function",
+         "function": {"name": "speak", "arguments": json.dumps({"message": "Still going: checked four sources, two left."})}},
+        {"id": "cW", "type": "function", "function": {"name": "get_active_tasks", "arguments": "{}"}},
+    ]}
+    llm = FakeLLM([work] * 4 + [update, {"role": "assistant", "content": "Tomorrow is dry, 19C."}])
+    agent, channel, _ = build_agent(llm, max_tool_iterations=20)
+    await asyncio.wait_for(agent.handle(make_cli_event("forecast?")), timeout=5)
+
+    assert channel.messages == ["Still going: checked four sources, two left.", "Tomorrow is dry, 19C."]
+
+
 async def test_ambient_events_are_never_nudged():
     work = make_tool_call_message("cX", "get_active_tasks", {})
     llm = FakeLLM([work] * 6 + [{"role": "assistant", "content": "IGNORE"}])

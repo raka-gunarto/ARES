@@ -581,8 +581,14 @@ It is not a system message because providers such as DeepSeek hoist every system
 message into the prompt header, where a mid-loop note loses its place. It asks: tell the person in one short sentence what you have
 found or are doing, alongside the next tool call, without repeating an earlier
 update, or just answer if done. The count restarts after a nudge and after any
-round that spoke. Ambient events are never nudged. Like `RULES_REMINDER` it is a
-code constant, never config.
+round that spoke. Ambient events are never nudged. Answering a nudge, the model
+often writes the update as text beside its tool call instead of calling `speak`.
+If the reply right after a nudge has tool calls and text but no successful
+`speak`, the agent speaks that text itself. Other narration beside tool calls
+stays undelivered. Whatever was spoken in answer to a nudge is progress, not an
+answer: step 8 leaves it out when deciding whether the final was already said, so
+a short final answer after a longer update is still delivered. Like
+`RULES_REMINDER`, the nudge is a code constant, never config.
 
 `handle(event)` steps — implement in this order, nothing more:
 
@@ -618,8 +624,9 @@ code constant, never config.
    - If the reply has content and no tool calls: final.
 8. Final assistant text handling:
    - If the event was user-initiated (step-4 first case): `await
-     router.speak(user_id, text)` when **no `speak` tool call happened** during
-     the loop, OR when the model called `speak` only to acknowledge and then put
+     router.speak(user_id, text)` when **no `speak` happened** during the loop
+     (progress updates given in answer to a nudge don't count — see "Progress
+     nudge"), OR when the model called `speak` only to acknowledge and then put
      the real answer in its final message (`utils.text.unspoken_final`: the final
      is at least as long as everything already spoken, carries more than filler,
      and is not a restatement of it). The user must always get a reply to direct
@@ -2340,7 +2347,10 @@ spoke mid-loop: a 45-round food order spoke zero times, a 32-round TV request
 once. After 4 silent tool rounds on a user's request, the loop now appends a
 fixed nudge asking for a one-sentence update. It was first sent as a system
 message, which the model ignored live (DeepSeek hoists system messages into the
-header); it is now a user-role note marked automatic. The RULES block is unchanged
+header); it is now a user-role note marked automatic. The model then answered it
+in text beside its tool call, so the agent speaks that one reply's text. Progress
+updates are excluded from the step-8 check, so they can't suppress a shorter
+final answer. The RULES block is unchanged
 and no dependency was added.
 
 *End of specification.*

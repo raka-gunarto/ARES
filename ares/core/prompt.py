@@ -99,10 +99,10 @@ RULES_REMINDER = (
 PROGRESS_NUDGE = (
     "[SYSTEM NOTE — automatic, not typed by the person] You have worked through "
     "several steps of the person's request without telling them anything, and "
-    "they are waiting in silence. If there is more to do, call `speak` with one "
-    "short sentence on what you have found or are doing now, in the same reply as "
-    "your next tool call, then keep working. Do not repeat an earlier update. If "
-    "you are already done, just answer the original request."
+    "they are waiting in silence. If there is more to do, call the `speak` tool "
+    "with one short sentence on what you have found or are doing now, in the same "
+    "reply as your next tool call, then keep working. Do not repeat an earlier "
+    "update. If you are already done, just answer the original request."
 )
 
 

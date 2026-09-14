@@ -234,9 +234,10 @@ class Agent:
             active = self.registry.core_tools()
             active_names = {t.name for t in active}
             iterations = 0
-            quiet_rounds = 0
+            quiet_rounds, nudged = 0, False
             spoke = False
             spoken_texts: list[str] = []
+            updates: set[str] = set()  # spoken in answer to a nudge: progress, not answers
             notified = False
             final_text = ""
 
@@ -246,17 +247,11 @@ class Agent:
                 tool_calls = reply.get("tool_calls")
 
                 self.tracer.emit(
-                    "reply",
-                    event_id=event.id,
-                    content=reply.get("content") or "",
+                    "reply", event_id=event.id, content=reply.get("content") or "",
                     thinking=reply.get("reasoning_content") or reply.get("reasoning") or "",
-                    tool_calls=[
-                        {
-                            "name": tc.get("function", {}).get("name"),
-                            "arguments": tc.get("function", {}).get("arguments"),
-                        }
-                        for tc in (tool_calls or [])
-                    ],
+                    tool_calls=[{"name": tc.get("function", {}).get("name"),
+                                 "arguments": tc.get("function", {}).get("arguments")}
+                                for tc in (tool_calls or [])],
                 )
 
                 if not tool_calls:
@@ -294,14 +289,9 @@ class Agent:
                             result = ToolResult(False, f"error: unknown tool {name}")
                         else:
                             ctx = ToolContext(
-                                user_id=event.user_id,
-                                event=event,
-                                session=session,
-                                router=self.router,
-                                memory=self.memory,
-                                tasks=self.tasks,
-                                registry=self.registry,
-                                services=self.services,
+                                user_id=event.user_id, event=event, session=session,
+                                router=self.router, memory=self.memory, tasks=self.tasks,
+                                registry=self.registry, services=self.services,
                             )
                             try:
                                 result = await tool.run(ctx, **args)
@@ -323,13 +313,10 @@ class Agent:
                                 active.append(t)
                                 active_names.add(t.name)
 
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.get("id"),
-                            "content": _cap_content(result.content, self._tool_result_char_cap),
-                        }
-                    )
+                    messages.append({
+                        "role": "tool", "tool_call_id": tc.get("id"),
+                        "content": _cap_content(result.content, self._tool_result_char_cap),
+                    })
 
                 iterations += 1
 
@@ -338,9 +325,18 @@ class Agent:
                 if iterations % _REMINDER_EVERY == 0:
                     messages.append({"role": "system", "content": RULES_REMINDER})
 
-                # A person waiting on a long turn gets progress, not silence.
+                # A person waiting on a long turn gets progress, not silence. An update
+                # written as text beside a tool call is never delivered: say it here.
+                update = (reply.get("content") or "").strip()
+                if nudged and update and len(spoken_texts) == spoken_before:
+                    await self.router.speak(event.user_id, update)
+                    spoken_texts.append(update)
+                    spoke = True
+                if nudged:
+                    updates.update(spoken_texts[spoken_before:])
                 quiet_rounds = 0 if len(spoken_texts) > spoken_before else quiet_rounds + 1
-                if user_initiated and quiet_rounds >= _UPDATE_EVERY:
+                nudged = user_initiated and quiet_rounds >= _UPDATE_EVERY
+                if nudged:
                     messages.append({"role": "user", "content": PROGRESS_NUDGE})
                     quiet_rounds = 0
 
@@ -366,7 +362,8 @@ class Agent:
             # is a control token, never a reply: the step-8 fallback used to
             # deliver it verbatim to the user on any user-initiated turn.
             ignored = is_ignore(final_text)
-            say_final = not spoke or unspoken_final(final_text, spoken_texts)
+            answers = [t for t in spoken_texts if t not in updates]
+            say_final = not answers or unspoken_final(final_text, answers)
             if user_initiated and not ignored and say_final:
                 await self.router.speak(event.user_id, final_text)
             elif not spoke and not notified:
