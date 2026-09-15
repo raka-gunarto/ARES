@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.20
+# ARES — Implementation Specification v1.21
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -944,6 +944,19 @@ template; 150 if unreadable) and without "Headless",
 `--screen-info` both 1280×900. It claims no other OS or browser. An interactive
 challenge that still appears is solved by the operator from the Browser tab
 (§17); the clearance cookie then persists in the profile.
+
+**Process hygiene (v1.21).** `fetch_page` spawns the runner with
+`start_new_session=True` and **SIGKILLs that process group after every run**,
+not only on timeout. Chromium leaves its zygote and renderers behind when the
+parent exits or crashes; an orphan that has closed the stdio pipes reparents to
+init and survives. This matters because `RLIMIT_NPROC` in the §15 runner counts
+every task owned by the sandbox uid system-wide, **threads included**, and one
+headless Chromium is roughly 100–150 tasks. Orphans therefore accumulate against
+that cap until nothing can fork: every later command — `/etc/profile` included —
+fails with `fork: Resource temporarily unavailable`, and because the orphans sit
+idle the CPU ulimit never reaps them, so the sandbox user stays wedged until the
+VM restarts. The cap is 1024, which fits several concurrent browsers while still
+bounding a fork bomb.
 
 ---
 
@@ -2352,5 +2365,18 @@ in text beside its tool call, so the agent speaks that one reply's text. Progres
 updates are excluded from the step-8 check, so they can't suppress a shorter
 final answer. The RULES block is unchanged
 and no dependency was added.
+
+v1.21 (operator-authorised) fixes the sandbox user wedging itself (§6.6).
+Reported: "look at the logs inside seem to be hitting resource errors", with a
+`fetch_page` result reading `error: browser failed: /etc/profile: fork: Resource
+temporarily unavailable`. It was not memory — the guest has never had an OOM
+kill or an allocation failure — but `RLIMIT_NPROC`, which counts threads and is
+per-uid system-wide: the runner's cap of 256 is below what two concurrent
+headless Chromiums need, and the group was swept only on timeout, so a crashed
+run's orphans held slots for good. In the live trace this broke every
+`fetch_page` for 46 minutes (16 failures, 2 of them on 3 September), while ARES
+retried once a minute. The group is now swept after every run and the cap is
+1024. Deploying the cap needs the manual runner reinstall (`deploy/sbx-runner`),
+not the updater. No new dependency; the RULES block is unchanged.
 
 *End of specification.*

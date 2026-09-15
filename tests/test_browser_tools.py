@@ -6,7 +6,10 @@ and never run as the daemon's own uid in prod.
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import shlex
+import signal
 
 import pytest
 
@@ -237,3 +240,44 @@ def test_a_real_article_is_not_blocked():
         "action later in the week. Traffic around Monas was closed from dawn."
     )
     assert not _looks_blocked(article)
+
+
+# ---- process hygiene: no orphans left holding sandbox task slots -----------
+
+
+# Long enough that _looks_blocked reads it as a real page, not an interstitial.
+_PAGE = "The rendered article body carries several sentences of ordinary prose. " * 6
+
+
+async def test_every_run_sweeps_leftover_children(monkeypatch, tmp_path):
+    """A child that outlives the render is killed, not left holding a slot.
+
+    Chromium orphans its zygote and renderers on crash; before the sweep those
+    survived, ate the runner's `ulimit -u` budget and wedged the sandbox user
+    with `fork: Resource temporarily unavailable` until the VM restarted.
+    """
+    marker = tmp_path / "pid"
+    tool = _tool(sandbox_user="", workdir=str(tmp_path))
+    monkeypatch.setattr(
+        tool, "_build_command",
+        # Detached stdio: exactly the orphan that survives today, since one
+        # still holding the pipes keeps communicate() blocked until the timeout.
+        lambda *a, **k: (
+            f"sleep 60 >/dev/null 2>&1 & echo $! > {marker}; "
+            f"echo '<html><p>{_PAGE}</p></html>'"
+        ),
+    )
+
+    result = await tool._render("https://example.com", 8080, 10, {})
+    assert result.ok
+
+    orphan = int(marker.read_text().strip())
+    for _ in range(40):  # SIGKILL is immediate; reparenting to init is not
+        try:
+            os.kill(orphan, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        os.kill(orphan, signal.SIGKILL)
+        pytest.fail(f"pid {orphan} outlived the render; the group was not swept")

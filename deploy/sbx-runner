@@ -10,9 +10,17 @@ set -eu
 cd /home/ares-sbx || exit 65
 
 # Hard backstops; the daemon also enforces its own timeout and kills the group.
+#
+# RLIMIT_NPROC (ulimit -u) counts every task owned by this uid *system-wide*,
+# threads included — not just this shell's descendants. One headless Chromium
+# is ~100-150 tasks, so the old value of 256 wedged the entire sandbox user as
+# soon as two fetches overlapped or one crashed run leaked its children: every
+# later command died with `fork: Resource temporarily unavailable`, including
+# /etc/profile, until the VM restarted. 1024 leaves room for a few concurrent
+# browsers while still bounding a fork bomb.
 ulimit -t 300      # CPU seconds
 ulimit -f 1048576  # max file size (blocks)
-ulimit -u 256      # max processes
+ulimit -u 1024     # max processes AND threads, per uid, system-wide
 
 exec /usr/bin/env -i \
   PATH=/usr/local/bin:/usr/bin:/bin \

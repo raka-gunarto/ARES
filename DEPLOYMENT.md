@@ -106,6 +106,14 @@ the thing that creates the security boundary. It:
   merged PR — changing it requires re-running `provision.sh`, a deliberate
   operator action. The runner scrubs the environment (`env -i`) so the daemon's
   secret env can never reach a sandbox shell, regardless of sudoers config.
+  It also sets the sandbox backstops, including `ulimit -u` (max tasks for the
+  `ares-sbx` uid). **Changing them means re-running `provision.sh` or copying
+  the file into the stopped VM — the updater does not deploy it.** `ulimit -u`
+  counts threads as well as processes and is per-uid system-wide, so it must
+  stay well clear of what a headless Chromium needs (~100-150 tasks each): at
+  the old value of 256, two concurrent `fetch_page` calls, or one crashed run
+  whose Chromium children were orphaned, wedged every command run as `ares-sbx`
+  with `fork: Resource temporarily unavailable` until the VM was restarted.
 - Installs `deploy/browser-runner` to **`/usr/local/sbin/ares-browser-runner`**
   (`root:root`, `0755`) — the sole sudo entry point `ares → ares-browser`, for
   the same reasons. It starts Chromium with the fixed launch template the daemon

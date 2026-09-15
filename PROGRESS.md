@@ -1,16 +1,22 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.20. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.21. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.20. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.21. Nothing is in progress. ***
 
-Last change: v1.20 (operator-authorised) — progress nudge: after 4 silent tool
-rounds on a user's request, ARES is prompted to speak an update. Details under
-`## History`.
+Last change: v1.21 (operator-authorised) — `fetch_page` sweeps its process group
+after every run, and the sandbox runner's task cap goes 256 → 1024. Orphaned
+Chromium children were holding `ares-sbx` task slots until nothing could fork.
+Details under `## History`.
+
+ACTION REQUIRED IN THE VM: the new `deploy/sbx-runner` is **not** deployed by the
+updater. Copy it to `/usr/local/sbin/ares-sbx-runner` with the VM stopped (or
+re-run `provision.sh`). Until then the cap is still 256, and a VM restart is also
+what clears any orphans currently holding slots.
 
 Next action: none queued. New work starts from an operator request; spec changes
 are operator-authorised, bump the version, and add an entry to spec Appendix A.
@@ -32,6 +38,35 @@ Open (non-blocking):
    containment.
 
 ## History
+
+### v1.21 — fetch_page process hygiene (2026-09-15)
+
+Operator saw `error: browser failed: /etc/profile: fork: Resource temporarily
+unavailable` in the dashboard trace and asked whether the VM needed more RAM.
+It did not: the guest has never recorded an OOM kill, an allocation failure or
+an fd exhaustion, and firecracker's ~2.4 GiB RSS is a high-water mark (no balloon
+device, so guest pages are never returned) rather than live pressure.
+
+The real limit was `RLIMIT_NPROC`. It counts threads as well as processes and is
+per-uid system-wide, so the runner's `ulimit -u 256` sat below what two
+concurrent headless Chromiums need (~100-150 tasks each). `_render` also swept
+the process group only on the timeout path, so a run that exited or crashed —
+there was a `chromium trap int3` in the guest journal — left orphans that
+reparented to init, sat idle (the CPU ulimit never reaps an idle process) and
+held slots for good. Every `fetch_page` then failed for 46 minutes while ARES
+retried once a minute from a monitoring task it created itself; 16 occurrences
+in the trace, 2 of them on 3 September.
+
+Fix: sweep the group in a `finally` after every run (the child is its own
+session leader, so its pgid is its pid and the group can never contain the
+daemon), and raise the cap to 1024. Test spawns a child with detached stdio —
+the orphan that survives today, since one still holding the pipes keeps
+`communicate()` blocked until the timeout — and asserts it is dead afterwards;
+it fails without the sweep.
+
+Not changed: `deploy/browser-runner` keeps `ulimit -u 512`; the persistent
+session is one long-lived Chromium under its own uid and has never hit it.
+
 
 Newest first. Entries are moved here verbatim from `## Current` when
 superseded.
