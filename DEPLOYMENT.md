@@ -294,7 +294,16 @@ Keep the dashboard on the tailnet/LAN only. There's no HTTPS termination in ARES
 - **SIP:** register ARES as an extension on your Asterisk; set `SIP_PASSWORD`,
   `server`, `username`. Point your mobile softphone (Linphone/Zoiper) at the
   same Asterisk; set the user's `sip_uri` in config so `place_call` can reach
-  you.
+  you. ARES accepts a call or a text **only** when the From address equals that
+  `sip_uri` exactly (user@host — see `sip/uri.py`), so the dialplan must present
+  the same address on both paths. Calls get it from the endpoint's `from_user` /
+  `from_domain`; **`MessageSend` does not** — it uses whatever `from` argument
+  the dialplan passes, and `${MESSAGE(from)}` is the address the sender reached
+  Asterisk on. With the softphone arriving over ZeroTier that is
+  `sip:phone@<zt-ip>`, not the TAP address in `sip_uri`, so every inbound text
+  was dropped (`sip: dropping message from unknown uri`) while calls worked.
+  Pass the literal user URI instead:
+  `MessageSend(pjsip:ares,sip:phone@10.16.0.1)`.
 - **Push:** stand up ntfy (self-hosted), set `server`/topic and `NTFY_TOKEN`;
   install the ntfy app on your phone and subscribe to the topic.
 - **Voice rooms:** if voice runs in-VM, pass the USB audio devices through to
