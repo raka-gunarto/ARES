@@ -19,6 +19,8 @@ if typing.TYPE_CHECKING:
 KEYS = {
     "Enter": ("Enter", "Enter", 13, "\r"),
     "Tab": ("Tab", "Tab", 9, None),
+    # Ticks a focused checkbox or presses a focused button; types a space in a field.
+    "Space": (" ", "Space", 32, " "),
     "Backspace": ("Backspace", "Backspace", 8, None),
     "Delete": ("Delete", "Delete", 46, None),
     "Escape": ("Escape", "Escape", 27, None),

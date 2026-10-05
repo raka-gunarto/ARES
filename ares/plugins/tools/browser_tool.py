@@ -18,23 +18,30 @@ from ares.plugins.tools.browser_cdp import BrowserError
 from ares.plugins.tools.browser_dom import (
     SNAPSHOT_JS,
     click_fallback_js,
+    find_text_js,
     focus_js,
     format_snapshot,
     locate_js,
     select_js,
+    toggle_js,
 )
 from ares.plugins.tools.browser_proxy import validate_url
 from ares.plugins.tools.browser_session import BrowserSession
 
 logger = get_logger(__name__)
 
-ACTIONS = ("open", "read", "click", "type", "select", "key", "scroll", "back", "forward", "close")
+ACTIONS = ("open", "read", "click", "click_text", "type", "select", "key", "scroll", "back",
+           "forward", "close")
 ACTION_TIMEOUT_S = 60
 SCROLL_PX = 700
 _STALE_REF = (
     "no element with ref {ref} on the current page — refs change whenever the page "
-    "changes; use action 'read' to get fresh ones"
+    "changes. The page as it is now, with fresh refs, is below"
 )
+
+
+class StaleRef(BrowserError):
+    """A ref from an earlier read that no longer exists on the page."""
 
 
 class Browser(BaseTool):
@@ -48,8 +55,13 @@ class Browser(BaseTool):
         "one-off read of a public page, fetch_page is cheaper. Every action returns "
         "the page as text with numbered refs like [12] for links, buttons and "
         "fields — act on those numbers, and 'read' again if the page changed. "
-        "Actions: open(url), read, click(ref), type(ref, text, submit?, clear?), "
-        "select(ref, text=option), key(key), scroll(direction), back, forward, close. "
+        "Actions: open(url), read, click(ref), click_text(text), type(ref, text, "
+        "submit?, clear?), select(ref, text=option), key(key), scroll(direction), "
+        "back, forward, close. A long page is shown around your scroll position, so "
+        "scroll to see more of it. click_text clicks the visible element with that "
+        "text — use it for an option in a long dropdown, or anything the page text "
+        "left out. Checkboxes appear as 'checkbox \"…\" (not checked)': click their "
+        "ref to tick them. "
         "You may be signed in as the person: submitting, buying, posting, sending "
         "or changing account settings needs their explicit go-ahead in this "
         "conversation. If a site needs a login, ask the person to sign in from the "
@@ -63,7 +75,9 @@ class Browser(BaseTool):
             "action": {"type": "string", "enum": list(ACTIONS)},
             "url": {"type": "string", "description": "For open: the http(s) URL."},
             "ref": {"type": "integer", "description": "Element ref number from the last page read."},
-            "text": {"type": "string", "description": "For type: text to enter. For select: the option."},
+            "text": {"type": "string", "description": (
+                "For type: text to enter. For select: the option. For click_text: the "
+                "visible text of the thing to click.")},
             "submit": {"type": "boolean", "description": "For type: press Enter afterwards."},
             "clear": {"type": "boolean", "description": "For type: clear the field first (default true)."},
             "key": {"type": "string", "enum": list(inp.KEYS)},
@@ -96,6 +110,12 @@ class Browser(BaseTool):
                 text = await asyncio.wait_for(self._act(action, kwargs), timeout=ACTION_TIMEOUT_S)
             except asyncio.TimeoutError:
                 return ToolResult(False, f"error: browser action timed out after {ACTION_TIMEOUT_S}s")
+            except StaleRef as e:
+                # Hand back the page now, so recovering costs no extra 'read'.
+                try:
+                    return ToolResult(False, f"error: {e}\n\n" + await self._snapshot())
+                except BrowserError:
+                    return ToolResult(False, f"error: {e}")
             except BrowserError as e:
                 return ToolResult(False, f"error: {e}")
             finally:
@@ -114,10 +134,19 @@ class Browser(BaseTool):
             await s.navigate(kw["url"].strip())
         elif action == "click":
             await self._click(self._ref(kw))
+        elif action == "click_text":
+            found = await s.evaluate(find_text_js(str(kw.get("text", ""))))
+            if not found or found.get("error"):
+                raise BrowserError((found or {}).get("error") or "click_text found nothing")
+            await self._click(0)
+            others = found.get("candidates", 1) - 1
+            note = f"Clicked {found.get('matched', '')!r}" + (
+                f" (best of {others + 1} matches)" if others else "")
+            return note + "\n" + await self._snapshot()
         elif action == "type":
             ref = self._ref(kw)
             if not await s.evaluate(focus_js(ref, kw.get("clear", True) is not False)):
-                raise BrowserError(_STALE_REF.format(ref=ref))
+                raise StaleRef(_STALE_REF.format(ref=ref))
             await inp.insert_text(s, str(kw.get("text", "")))
             if kw.get("submit"):
                 s.expect_load()
@@ -152,9 +181,12 @@ class Browser(BaseTool):
         s = self.session
         loc = await s.evaluate(locate_js(ref))
         if not loc:
-            raise BrowserError(_STALE_REF.format(ref=ref))
+            raise StaleRef(_STALE_REF.format(ref=ref))
         s.expect_load()
-        if loc.get("covered"):
+        if loc.get("toggle"):
+            # Its real input is hidden behind a styled box: toggle the input.
+            await s.evaluate(toggle_js(ref))
+        elif loc.get("covered"):
             # Something (a banner, an overlay) sits on top; click the element itself.
             await s.evaluate(click_fallback_js(ref))
         else:
