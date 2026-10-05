@@ -1,22 +1,18 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.21. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.22. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.21. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.22. Nothing is in progress. ***
 
-Last change: v1.21 (operator-authorised) — `fetch_page` sweeps its process group
-after every run, and the sandbox runner's task cap goes 256 → 1024. Orphaned
-Chromium children were holding `ares-sbx` task slots until nothing could fork.
+Last change: v1.22 (operator-authorised) — browser tasks finish: the page
+snapshot exposes styled checkboxes, windows long pages around the scroll
+position and reads open dialogs first; new `click_text` action and `Space` key;
+the agent wraps up at 720 s with a report instead of being cut off at 900 s.
 Details under `## History`.
-
-ACTION REQUIRED IN THE VM: the new `deploy/sbx-runner` is **not** deployed by the
-updater. Copy it to `/usr/local/sbin/ares-sbx-runner` with the VM stopped (or
-re-run `provision.sh`). Until then the cap is still 256, and a VM restart is also
-what clears any orphans currently holding slots.
 
 Next action: none queued. New work starts from an operator request; spec changes
 are operator-authorised, bump the version, and add an entry to spec Appendix A.
@@ -38,6 +34,51 @@ Open (non-blocking):
    containment.
 
 ## History
+
+### v1.22 — browser tasks finish (2026-10-05)
+
+Reported: "it got stuck on a booking just now". The trace showed ARES finding
+the LOFT Sky Bar afternoon tea on SevenRooms and filling name, email and phone.
+It then could not tick a required "I certify I am 18" checkbox: the real input
+was `opacity: 0` behind a styled label, so `visible()` dropped it and the label
+was not in the interactive selector. It tried raw HTML, Tab ×7 + `Space`
+(unsupported key), lost the 5-minute table hold, tried Tab ×7 + `Enter`, and was
+abandoned by the 900 s dispatcher cap after 66 tool calls.
+
+Across the whole trace, 8 of the 10 user turns that never finished were browser
+form tasks, and each stalled on something the snapshot hid. The Greenhouse job
+application (5 attempts, 23 Sep) never saw its lower fields, because the
+snapshot walked from the top and cut at 8000 chars whatever the scroll position;
+ARES said so in its own reasoning. The KFC order (13 Sep) never saw its modal's
+"Add" button, a portal at the end of the DOM past the cut. A SevenRooms booking
+on 25 Sep was lost while hunting "United Kingdom" in a 250-entry custom
+dropdown with a hold timer running, the same wall as today's.
+
+Fixes, in `browser_dom.py` / `browser_tool.py` / `browser_input.py`: styled
+checkbox/radio reached through its label and toggled via the input itself
+(`toggle_js`; a mouse click on a label can hit an inline Terms link); visible
+native checkboxes named by their label (were `checkbox "on"`); aria
+checked/expanded/selected states; more interactive roles; the snapshot windowed
+around the scroll position with fixed/sticky content listed first and an
+above/below footer; open dialogs read first; `click_text(text)`; `Space`; a
+stale ref returns the current page, so recovery costs no extra `read`. In
+`agent.py`: after `TURN_WRAP_UP_S` (720 s) the forced-final path runs with
+`WRAP_UP_NOTE`, and prior speech counts as progress so the report is always
+delivered. Without that, `unspoken_final` would have dropped a report shorter
+than the ~15 progress lines spoken before it.
+
+Verified in a real Chromium: the Playwright image already on the host, driven
+over CDP with these exact scripts. The old scripts reproduce four failures (no
+ref for the age box; identical snapshot before and after scrolling; modal
+button missing; `checkbox "on"`). The new ones pass 24/24 scenarios. Kept as
+`tests/test_browser_dom_live.py` (7 tests, skipped unless `ARES_TEST_CDP` is
+set). Snapshot cost: ~160 ms on an 18k-element page (was 14 ms, when it
+stopped at the cut).
+
+Not done: a file-upload action (the job application wanted a CV upload; ARES
+used the "enter manually" path). It needs a decision on which files the
+browser user may read.
+
 
 ### v1.21 — fetch_page process hygiene (2026-09-15)
 

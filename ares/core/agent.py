@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import typing
 from datetime import datetime
 
@@ -11,7 +12,9 @@ if typing.TYPE_CHECKING:
 
 from ares.core.event import Event
 from ares.core.llm.client import LLMClient
-from ares.core.prompt import PROGRESS_NUDGE, RULES_REMINDER, build_system_prompt, is_ignore
+from ares.core.prompt import (
+    PROGRESS_NUDGE, RULES_REMINDER, WRAP_UP_NOTE, build_system_prompt, is_ignore,
+)
 from ares.core.router import ResponseRouter
 from ares.core.session import SessionManager
 from ares.core.tool import ToolContext, ToolRegistry, ToolResult
@@ -43,6 +46,9 @@ _MIN_INPUT_BUDGET = 2048
 _REMINDER_EVERY = 20
 # Nudge for a progress update after this many tool rounds in a row without `speak`.
 _UPDATE_EVERY = 4
+# Stop tool use and report after this long; the dispatcher abandons a turn at
+# 900 s, and this leaves one slow round plus the final answer to fit before it.
+TURN_WRAP_UP_S = 720.0
 
 
 def estimate_tokens(text: str) -> int:
@@ -136,6 +142,7 @@ class Agent:
         context_window: int = 128000,
         max_output_tokens: int | None = None,
         tracer: Tracer | None = None,
+        turn_wrap_up_s: float = TURN_WRAP_UP_S,
     ) -> None:
         """Store collaborators needed to process events."""
         self.llm = llm
@@ -154,6 +161,7 @@ class Agent:
         # crowd out everything else before fit_context even runs.
         self._tool_result_char_cap = max(8000, (context_window // 8) * _CHARS_PER_TOKEN)
         self.tracer = tracer or NullTracer()
+        self.turn_wrap_up_s = turn_wrap_up_s
 
     def _input_budget(self, tools: list[dict] | None) -> int:
         """Estimated input-token budget for one call, after reserving output and
@@ -233,7 +241,7 @@ class Agent:
             # STEP 6
             active = self.registry.core_tools()
             active_names = {t.name for t in active}
-            iterations = 0
+            iterations, started = 0, time.monotonic()
             quiet_rounds, nudged = 0, False
             spoke = False
             spoken_texts: list[str] = []
@@ -279,11 +287,8 @@ class Agent:
                             if cleaned and cleaned != name:
                                 tool = self.registry.get(cleaned)
                                 if tool is not None:
-                                    log.warning(
-                                        "recovered malformed tool name %r -> %r",
-                                        name,
-                                        cleaned,
-                                    )
+                                    log.warning("recovered malformed tool name %r -> %r",
+                                                name, cleaned)
                                     name = cleaned
                         if tool is None:
                             result = ToolResult(False, f"error: unknown tool {name}")
@@ -340,21 +345,19 @@ class Agent:
                     messages.append({"role": "user", "content": PROGRESS_NUDGE})
                     quiet_rounds = 0
 
-                if iterations >= self.max_tool_iterations:
-                    messages.append({"role": "user",
-                                     "content": "Tool budget exhausted. Respond now without tools."})
+                out_of_time = time.monotonic() - started >= self.turn_wrap_up_s
+                if iterations >= self.max_tool_iterations or out_of_time:
+                    messages.append({"role": "user", "content": WRAP_UP_NOTE if out_of_time
+                                     else "Tool budget exhausted. Respond now without tools."})
                     messages.append({"role": "system", "content": RULES_REMINDER})
+                    if out_of_time:  # all spoken so far was progress: the report must go out
+                        updates.update(spoken_texts)
                     final_reply = await self._chat(messages, tools=None)
                     final_text = final_reply.get("content") or ""
-                    self.tracer.emit(
-                        "reply",
-                        event_id=event.id,
-                        content=final_text,
-                        thinking=final_reply.get("reasoning_content")
-                        or final_reply.get("reasoning") or "",
-                        tool_calls=[],
-                        forced_final=True,
-                    )
+                    self.tracer.emit("reply", event_id=event.id, content=final_text,
+                                     thinking=final_reply.get("reasoning_content")
+                                     or final_reply.get("reasoning") or "", tool_calls=[],
+                                     forced_final="time" if out_of_time else "rounds")
                     break
 
             # STEP 8

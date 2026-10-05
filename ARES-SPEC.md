@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.21
+# ARES — Implementation Specification v1.22
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -368,7 +368,9 @@ class Dispatcher:
   sound. A turn that hits the cap is abandoned with an ERROR log and, if the
   event was user-initiated, the user is told it took too long; the worker moves
   on to the next event. The cap is generous because tools such as a call or a
-  browser flow legitimately take minutes.
+  browser flow legitimately take minutes. It is a backstop: the agent wraps up on
+  its own at `TURN_WRAP_UP_S` (720 s, §4.10) so a long turn ends with a report
+  rather than being cut off.
 
 ### 4.4 `core/critical.py`
 
@@ -561,7 +563,9 @@ class Agent:
                  services: dict[str, object], persona: str,
                  max_tool_iterations: int = 10,
                  context_window: int = 128000,
-                 max_output_tokens: int | None = None) -> None
+                 max_output_tokens: int | None = None,
+                 tracer: Tracer | None = None,
+                 turn_wrap_up_s: float = TURN_WRAP_UP_S) -> None  # 720.0
     async def handle(self, event: Event) -> None
 ```
 
@@ -589,6 +593,19 @@ stays undelivered. Whatever was spoken in answer to a nudge is progress, not an
 answer: step 8 leaves it out when deciding whether the final was already said, so
 a short final answer after a longer update is still delivered. Like
 `RULES_REMINDER`, the nudge is a code constant, never config.
+
+**Time wrap-up (v1.22).** The dispatcher abandons a turn at 900 s (§4.3), and an
+abandoned turn loses everything: the person hears only that it took too long, and
+step 9 never records how far it got, so "carry on" starts from nothing. At the end
+of any round once `TURN_WRAP_UP_S` (720 s) has passed since step 6, the agent
+takes the forced-final path used for the tool budget, with the fixed `WRAP_UP_NOTE`
+(`prompt.py`, user-role): stop using tools; tell the person where you got to, what
+is left, and anything urgent (such as a booking hold about to expire); offer to
+carry on. Everything spoken before it counts as progress, so step 8 always
+delivers the report — otherwise `unspoken_final` would drop a report shorter than
+the run of updates before it. The reply is traced with `forced_final: "time"`
+(`"rounds"` for the tool budget). 180 s are left for one slow round plus the
+final call; a test pins the margin at 120 s or more.
 
 `handle(event)` steps — implement in this order, nothing more:
 
@@ -620,7 +637,8 @@ a short final answer after a longer update is still delivered. Like
      a successful `speak` (see above); if
      `iterations >= max_tool_iterations`, append a user message `"Tool budget
      exhausted. Respond now without tools."` plus `RULES_REMINDER` and loop once
-     more with `tools=None`, then treat as final.
+     more with `tools=None`, then treat as final. If `TURN_WRAP_UP_S` has passed
+     instead, do the same with `WRAP_UP_NOTE` (see "Time wrap-up").
    - If the reply has content and no tool calls: final.
 8. Final assistant text handling:
    - If the event was user-initiated (step-4 first case): `await
@@ -918,7 +936,7 @@ shared with the dashboard's live view (§17).
 | name | params | keywords | behaviour |
 |---|---|---|---|
 | `fetch_page` | `url: string`, `raw_html: boolean?`, `timeout_s: integer?` | browse, web, page, url, fetch, site, website, internet, lookup, scrape, html | Renders a **public** http(s) page with a headless Chromium (JavaScript runs) and returns its visible text, capped at 6000 chars and prefixed with an untrusted-data banner. `raw_html` returns the DOM instead. Runs as the sandbox user through the §15 runner in a throwaway profile — never as the daemon uid. Presents as ordinary desktop Chromium (see below). The URL is vetted up front (every resolved address global, a web port) so the model gets a clear refusal, and then every connection the page makes — subresources, redirects, scripts — goes through a per-call egress proxy (`browser_proxy.py`, below) that repeats that vetting and connects only to the address it vetted; the daemon shares a link with Home Assistant, the dashboard and the updater hook, and DNS rebinding cannot swap an internal host in after the check. Chromium is an external binary, so this adds **no** dependency under §12. |
-| `browser` | `action: enum[open, read, click, type, select, key, scroll, back, forward, close]`, `url: string?`, `ref: integer?`, `text: string?`, `submit: boolean?`, `clear: boolean?`, `key: enum?`, `direction: enum[down, up]?` | browser, browse, web, click, form, login, site, website, page | (v1.16, core) Drives ONE persistent headless Chromium session (`browser_session.py`) shared with the dashboard live view. The page stays open between calls; the profile (cookies, logins) lives in `ares-browser`'s home and survives restarts. Every action returns a snapshot — URL, title, visible text with interactive elements tagged `[n]`, capped at 8000 chars, under an untrusted-data banner; password field values are never reported. Input is DevTools mouse/keyboard events; a covered element falls back to a JS click. Every connection goes through the in-daemon egress proxy (`browser_proxy.py`): host resolved by the proxy, any non-global answer or a port outside 80/443/8080/8443 refused, connection made only to the vetted address; `--proxy-bypass-list=<-loopback>`, `--disable-quic` and `disable_non_proxied_udp` WebRTC keep traffic on it. DevTools over `--remote-debugging-pipe`; downloads denied; presents as ordinary desktop Chromium (see below); each DevTools command times out (20 s) and each action is capped at 60 s so a hung page cannot wedge the worker. Launch: prod `sudo -n -u {browser_user} /usr/local/sbin/ares-browser-runner {fixed template}`; prod refuses if `browser_user` is empty, the daemon uid, or the `run_shell` sandbox user. Refuses while the operator has control (§17). Closes after `session_idle_close_s` idle (profile kept); session-only cookies do not survive a close. Not available to subagents (§20.2). |
+| `browser` | `action: enum[open, read, click, click_text, type, select, key, scroll, back, forward, close]`, `url: string?`, `ref: integer?`, `text: string?`, `submit: boolean?`, `clear: boolean?`, `key: enum?`, `direction: enum[down, up]?` | browser, browse, web, click, form, login, site, website, page | (v1.16, core) Drives ONE persistent headless Chromium session (`browser_session.py`) shared with the dashboard live view. The page stays open between calls; the profile (cookies, logins) lives in `ares-browser`'s home and survives restarts. Every action returns a snapshot — URL, title, visible text with interactive elements tagged `[n]`, capped at 8000 chars and windowed around the scroll position with any open dialog first (see "Page snapshot" below), under an untrusted-data banner; password field values are never reported. `click_text(text)` clicks the visible element best matching `text`, for what the snapshot cannot show. A ref that no longer exists returns the error together with the current page. Input is DevTools mouse/keyboard events; a covered element falls back to a JS click. Every connection goes through the in-daemon egress proxy (`browser_proxy.py`): host resolved by the proxy, any non-global answer or a port outside 80/443/8080/8443 refused, connection made only to the vetted address; `--proxy-bypass-list=<-loopback>`, `--disable-quic` and `disable_non_proxied_udp` WebRTC keep traffic on it. DevTools over `--remote-debugging-pipe`; downloads denied; presents as ordinary desktop Chromium (see below); each DevTools command times out (20 s) and each action is capped at 60 s so a hung page cannot wedge the worker. Launch: prod `sudo -n -u {browser_user} /usr/local/sbin/ares-browser-runner {fixed template}`; prod refuses if `browser_user` is empty, the daemon uid, or the `run_shell` sandbox user. Refuses while the operator has control (§17). Closes after `session_idle_close_s` idle (profile kept); session-only cookies do not survive a close. Not available to subagents (§20.2). |
 
 **Egress proxy (`browser_proxy.py`).** A page opens connections the daemon never
 sees as a URL, so neither tool trusts per-URL vetting alone. Chromium is started
@@ -957,6 +975,48 @@ fails with `fork: Resource temporarily unavailable`, and because the orphans sit
 idle the CPU ulimit never reaps them, so the sandbox user stays wedged until the
 VM restarts. The cap is 1024, which fits several concurrent browsers while still
 bounding a fork bomb.
+
+**Page snapshot (v1.22, `browser_dom.py`).** The model cannot see pixels, so the
+snapshot is all it knows of a page. In the trace, 8 of the 10 user turns that
+never finished were browser form-filling, and each stalled on something the
+snapshot hid:
+
+- *Styled checkboxes.* Sites hide the real `<input type=checkbox>` (opacity 0,
+  clipped, or `display:none`) and draw the box on its `<label>`; the visibility
+  check dropped the input and the label was not interactive, so a required
+  "I am 18 or over" box appeared as plain text with no ref. A visible label whose
+  control is a hidden checkbox/radio now carries the ref, described as
+  `checkbox "<label text>" (checked|not checked)`; a rendered hidden toggle with
+  no visible label carries it itself. Clicking such a ref calls `click()` on the
+  input (`toggle_js`) instead of a mouse click, because labels often contain links
+  ("I agree to the Terms"). Visible native checkboxes are named by their label
+  (previously `checkbox "on"`). `aria-checked`, `aria-expanded` and
+  `aria-selected` are reported, and `switch`, `combobox`, `menuitemcheckbox` and
+  `menuitemradio` roles are interactive.
+- *Long pages.* The snapshot walked from the top and stopped at 8000 chars, so
+  scrolling never changed it and lower form fields were unreachable. Each line now
+  records its document position. A page that fits is shown whole, as before;
+  otherwise the window starts at the scroll position (backing up while there is
+  room), content in fixed or sticky boxes is listed first in its own section, and
+  the footer says how many chars lie above and below.
+- *Modals.* An open `role=dialog`/`alertdialog`, `dialog[open]` or
+  `aria-modal=true` element, often a portal at the end of the DOM, is read first
+  under its own heading (at most 60% of the budget).
+- *Long custom dropdowns.* A 250-entry country list overflowed the snapshot, and
+  `select` only handles a native `<select>`. `click_text(text)` (`find_text_js`)
+  matches visible text across the page, preferring an exact match, then one inside
+  an open listbox/menu/dialog, then the most specific. It marks the closest
+  clickable ancestor as ref 0 and clicks it like any ref. If that ancestor is a
+  whole container (a focusable list wrapper), it marks the text's own element
+  instead, so the click hits that option rather than the list's centre. `select`
+  on a custom dropdown now points to `click_text`.
+- *Keyboard.* `Space` joins the key list; it ticks a focused checkbox or presses a
+  focused button (`Enter` does neither for a checkbox).
+
+Collection stops at 20× the cap on pathological pages. On an 18,000-element page
+the snapshot takes about 160 ms (14 ms before, when it stopped at the cap).
+`tests/test_browser_dom_live.py` runs these scripts in a real Chromium when
+`ARES_TEST_CDP` names a debugging endpoint, and skips otherwise.
 
 ---
 
@@ -2378,5 +2438,23 @@ run's orphans held slots for good. In the live trace this broke every
 retried once a minute. The group is now swept after every run and the cap is
 1024. Deploying the cap needs the manual runner reinstall (`deploy/sbx-runner`),
 not the updater. No new dependency; the RULES block is unchanged.
+
+v1.22 (operator-authorised) makes browser tasks finish (§6.6, §4.10). Reported:
+"it got stuck on a booking just now". ARES had found the LOFT Sky Bar afternoon
+tea on SevenRooms (24 Oct, 14:00, two guests) and filled in name, email and phone.
+The required "I certify I am 18" box had no ref: its input was hidden behind a
+styled label. It tried `fetch_page` on the JS app, then Tab ×7 + `Space`
+("unsupported key"); the 5-minute table hold ran out; then Tab ×7 + `Enter`. The
+900 s cap abandoned the turn after 66 tool calls, and the person heard only that
+it took too long. Across the trace, 8 of the 10 user turns that never finished
+were browser form tasks: a job application whose lower fields never appeared
+however far it scrolled, a food order whose modal "Add" sat past the
+truncation, and an earlier booking lost on the country dropdown with a hold
+timer running. The snapshot now exposes styled checkboxes through their labels,
+windows long pages around the scroll position, reads open dialogs first, and
+names native checkboxes by their labels. New: `click_text`, the `Space` key,
+and a stale ref returning the current page. Separately, the agent stops at 720 s
+and reports where it got to (`WRAP_UP_NOTE`), so the 900 s cap is a backstop. No
+new dependency; the RULES block is unchanged.
 
 *End of specification.*

@@ -105,6 +105,21 @@ PROGRESS_NUDGE = (
     "update. If you are already done, just answer the original request."
 )
 
+# The dispatcher abandons a turn at its wall-clock cap and everything the turn
+# knew is lost: the person hears "that took too long" and the session history
+# never records how far it got. In the trace this happened 8 times, every one a
+# long browser task (a booking whose table hold was running out, a job
+# application). So before the cap the agent stops tool use and asks for a
+# report the person can act on and a follow-up turn can resume from. A fixed
+# code constant, user-role for the same reason as PROGRESS_NUDGE.
+WRAP_UP_NOTE = (
+    "[SYSTEM NOTE — automatic, not typed by the person] This request has run for "
+    "a long time and is about to be cut off, so stop using tools now. Tell the "
+    "person exactly where you got to, what is left to do, and anything urgent "
+    "they should know (for example a booking hold that is about to expire), and "
+    "offer to carry on from there."
+)
+
 
 # --- The IGNORE sentinel ----------------------------------------------------
 # RULES tells the model to answer an ambient event with the single word IGNORE.

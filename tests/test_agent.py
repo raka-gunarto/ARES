@@ -293,6 +293,35 @@ async def test_ambient_events_are_never_nudged():
     assert all(_nudges(call) == 0 for call in llm.calls)
 
 
+async def test_a_turn_near_the_time_cap_stops_and_reports_where_it_got_to():
+    """Before the dispatcher abandons a turn (and everything it knew), the agent
+    stops tool use and has the model say how far it got (§4.10)."""
+    from ares.core.prompt import WRAP_UP_NOTE
+
+    progress = make_tool_call_message("cS", "speak", {
+        "message": "Form's up with your name, email and phone in; ticking the age box next."})
+    report = {"role": "assistant", "content": "Stopped at the age box; the hold ends 13:25."}
+    llm = FakeLLM([progress, report])
+    agent, channel, sessions = build_agent(llm, max_tool_iterations=50)
+    agent.turn_wrap_up_s = 0  # every round is past the limit
+    await asyncio.wait_for(agent.handle(make_cli_event("book it")), timeout=5)
+
+    wrap = llm.calls[1]
+    assert wrap["tools"] is None
+    assert any(m.get("role") == "user" and m.get("content") == WRAP_UP_NOTE for m in wrap["messages"])
+    # Delivered even though the earlier progress line was longer, and kept in
+    # history so a follow-up turn can carry on from it.
+    assert channel.messages[-1] == report["content"]
+    assert sessions.get("primary").history[-1]["content"] == report["content"]
+
+
+def test_wrap_up_leaves_room_under_the_dispatcher_cap():
+    from ares.core.agent import TURN_WRAP_UP_S
+    from ares.core.dispatcher import DEFAULT_TURN_TIMEOUT_S
+
+    assert DEFAULT_TURN_TIMEOUT_S - TURN_WRAP_UP_S >= 120
+
+
 # ---- LLM client retries -------------------------------------------------------
 
 async def test_llm_client_retries_a_rate_limit_then_succeeds(monkeypatch):
