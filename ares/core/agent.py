@@ -259,8 +259,7 @@ class Agent:
                     thinking=reply.get("reasoning_content") or reply.get("reasoning") or "",
                     tool_calls=[{"name": tc.get("function", {}).get("name"),
                                  "arguments": tc.get("function", {}).get("arguments")}
-                                for tc in (tool_calls or [])],
-                )
+                                for tc in (tool_calls or [])], usage=getattr(self.llm, "last_usage", None))
 
                 if not tool_calls:
                     final_text = reply.get("content") or ""
@@ -357,7 +356,8 @@ class Agent:
                     self.tracer.emit("reply", event_id=event.id, content=final_text,
                                      thinking=final_reply.get("reasoning_content")
                                      or final_reply.get("reasoning") or "", tool_calls=[],
-                                     forced_final="time" if out_of_time else "rounds")
+                                     forced_final="time" if out_of_time else "rounds",
+                                     usage=getattr(self.llm, "last_usage", None))
                     break
 
             # STEP 8

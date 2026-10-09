@@ -1,17 +1,16 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.22. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.23. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.22. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.23. Nothing is in progress. ***
 
-Last change: v1.22 (operator-authorised) — browser tasks finish: the page
-snapshot exposes styled checkboxes, windows long pages around the scroll
-position and reads open dialogs first; new `click_text` action and `Space` key;
-the agent wraps up at 720 s with a report instead of being cut off at 900 s.
+Last change: v1.23 (operator-authorised) — prompt caching for Anthropic models
+(top-level `cache_control`) and token usage (prompt, cached, cache writes,
+completion, cost) on every `reply` trace entry, shown in the dashboard trace.
 Details under `## History`.
 
 Next action: none queued. New work starts from an operator request; spec changes
@@ -34,6 +33,19 @@ Open (non-blocking):
    containment.
 
 ## History
+
+### v1.23 — prompt caching and usage tracing (2026-10-09)
+
+Asked: "we don't use prompt caching?" After the switch to
+`anthropic/claude-haiku-5.5`, no request carried `cache_control` (Anthropic,
+unlike DeepSeek, caches only on request) and the response `usage` block was
+thrown away. `LLMClient.chat` now sends `"cache_control": {"type": "ephemeral"}`
+for `anthropic/` and `~anthropic/` model ids and keeps a summary of `usage` in
+`last_usage` (never on the returned message, which goes back to the model). The
+agent adds it as `usage` to each `reply` trace entry. The system prompt is
+fixed for a turn and the loop only appends, so rounds after the first should
+read the prefix from cache; cross-turn hits are rare because the prompt carries
+the current minute. Tests: `tests/test_llm_client.py`.
 
 ### v1.22 — browser tasks finish (2026-10-05)
 

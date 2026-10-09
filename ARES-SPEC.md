@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.22
+# ARES — Implementation Specification v1.23
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -552,6 +552,16 @@ errors and 5xx with 2 s backoff, and on 429 honouring `Retry-After` (capped at
 20 s; without the header, 2 s × attempt). Raises `LLMError` after exhausting retries.
 No streaming. When `max_tokens` is set it is sent as the OpenAI `max_tokens`
 field (per-call output cap); when None it is omitted.
+
+**Prompt caching and usage (v1.23).** When the model id starts with
+`anthropic/` (or `~anthropic/`), the body carries top-level
+`"cache_control": {"type": "ephemeral"}` so OpenRouter caches the prompt prefix
+(5-minute TTL); other providers cache automatically and get no such field. After
+a 2xx the client keeps `last_usage` — `prompt`, `cached`, `cache_write`,
+`completion` and `cost` from the response's `usage` block, or None when absent —
+and never adds it to the returned message, which the agent sends back verbatim.
+The agent records it as `usage` on each `reply` trace entry, and the dashboard
+trace shows it beside the reply's time (tokens in, cached, out, cost).
 
 ### 4.10 `core/agent.py` — the event handling cycle (exact algorithm)
 
@@ -2456,5 +2466,14 @@ names native checkboxes by their labels. New: `click_text`, the `Space` key,
 and a stale ref returning the current page. Separately, the agent stops at 720 s
 and reports where it got to (`WRAP_UP_NOTE`), so the 900 s cap is a backstop. No
 new dependency; the RULES block is unchanged.
+
+v1.23 (operator-authorised) turns on prompt caching for Anthropic models and
+traces token usage (§4.9). Asked: "we don't use prompt caching?" After the
+switch to `anthropic/claude-haiku-5.5`, no request asked for caching (Anthropic,
+unlike DeepSeek, caches only when asked), and the `usage` block was discarded,
+so neither cost nor cache hits could be seen. The system prompt is built once
+per turn and the tool loop only appends, so every round after the first can
+re-read the turn so far at a tenth of the input price. No new dependency; the
+RULES block is unchanged.
 
 *End of specification.*

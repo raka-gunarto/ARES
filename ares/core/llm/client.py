@@ -20,6 +20,21 @@ def _retry_after_s(response: httpx.Response, default: float) -> float:
     return min(max(value, 0.0), MAX_RETRY_AFTER_S)
 
 
+def _usage_summary(usage: dict | None) -> dict | None:
+    """The token counts worth tracing from an OpenAI-style `usage` block."""
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details") or {}
+    summary = {
+        "prompt": usage.get("prompt_tokens"),
+        "cached": details.get("cached_tokens"),
+        "cache_write": details.get("cache_write_tokens"),
+        "completion": usage.get("completion_tokens"),
+        "cost": usage.get("cost"),
+    }
+    return {k: v for k, v in summary.items() if v is not None}
+
+
 class LLMError(Exception):
     """Raised when LLM communication fails after retries."""
 
@@ -55,6 +70,8 @@ class LLMClient:
         self.timeout_s = timeout_s
         self.max_retries = max_retries
         self.max_tokens = max_tokens
+        # Token counts of the most recent successful call (for the trace).
+        self.last_usage: dict | None = None
         self._client = httpx.AsyncClient(timeout=timeout_s)
 
     async def chat(
@@ -93,9 +110,15 @@ class LLMClient:
         if tools is not None:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+        # Anthropic models cache only on request; other providers (DeepSeek,
+        # OpenAI) cache prefixes automatically. The breakpoint lands on the last
+        # cacheable block, so each tool round re-reads the turn so far.
+        if self.model.lstrip("~").startswith("anthropic/"):
+            body["cache_control"] = {"type": "ephemeral"}
 
         # Retry loop: attempt up to max_retries + 1 times
         last_error: str | None = None
+        self.last_usage = None
         for attempt in range(self.max_retries + 1):
             try:
                 log.debug(f"LLM chat attempt {attempt + 1}/{self.max_retries + 1}")
@@ -149,7 +172,8 @@ class LLMClient:
                             f"LLM returned no choices: {data.get('error', data)}"
                         )
                     message = data["choices"][0]["message"]
-                    log.debug(f"LLM response: {message}")
+                    self.last_usage = _usage_summary(data.get("usage"))
+                    log.debug(f"LLM response: {message} usage={self.last_usage}")
                     return message
 
                 # Unexpected status code

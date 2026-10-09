@@ -572,11 +572,17 @@ function traceLabel(r){
   if(k==="error") return "ERROR";
   return (k||"?").toUpperCase();
 }
+function usageText(u){
+  if(!u||u.prompt==null) return "";
+  const k=n=>n>=1000?(n/1000).toFixed(1)+"k":String(n);
+  return k(u.prompt)+" in"+(u.cached?" · "+k(u.cached)+" cached":"")+" · "+k(u.completion||0)+" out"
+    +(u.cost!=null?" · $"+u.cost.toFixed(4):"");
+}
 function TraceRow({r}){
   const t=(r.ts||"").replace("T"," ").replace(/\..*/,"").slice(11);
   const tcs=(r.tool_calls||[]).filter(x=>x&&x.name);
   return html`<div class=${"trow k-"+(r.kind||"x")}>
-    <div class="tr-hd"><span class="tr-tag">${traceLabel(r)}</span><span class="tr-ts">${t}</span></div>
+    <div class="tr-hd"><span class="tr-tag">${traceLabel(r)}</span><span class="tr-ts">${r.kind==="reply"&&usageText(r.usage)?usageText(r.usage)+" · ":""}${t}</span></div>
     ${r.kind==="event" && r.text ? html`<pre class="tr-body">${r.text}</pre>`:null}
     ${r.kind==="reply" && r.thinking ? html`<pre class="tr-body think"><span class="tr-lbl">thinking</span>${r.thinking}</pre>`:null}
     ${r.kind==="reply" && r.content ? html`<pre class="tr-body">${r.content}</pre>`:null}
