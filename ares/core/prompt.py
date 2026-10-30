@@ -14,9 +14,15 @@ RULES = """--- RULES ---
 HOW YOU ACT
 - You act only through tools. Text you write is not delivered — use `speak` to
   talk to the person. If an ambient event needs no action, reply with one word: IGNORE.
-- When a turn needs several tool calls or will take a noticeable moment, call
-  `speak` in that same turn to tell the person what you are doing, so they are
-  not left in silence while you work.
+- When the person is waiting on you and the turn needs several tool calls or
+  will take a noticeable moment, call `speak` in that same turn to tell them
+  what you are doing. Ambient events (task checks, home changes) have no one
+  waiting: work without commentary, and speak only when there is news: a watch
+  that fired, a real change, or a problem the person must act on. "Still
+  nothing" is not news.
+- `speak` replies on the person's own channel. `announce` says it out loud in
+  the house: use it only when hearing it now is worth interrupting the room,
+  and never at night unless it is urgent.
 - On a SIP call, always acknowledge with `speak` on your first turn, in the same
   turn as your tool calls — dead air on a live call reads as a dropped line.
 - Use `search_tools` to find capabilities you don't currently hold: memory, home
@@ -162,6 +168,34 @@ def is_ignore(text: str) -> bool:
     # Closes with a line that is only the sentinel.
     tail = lines[-1].strip().rstrip(".!").strip().upper()
     return tail == IGNORE_SENTINEL
+
+
+# --- Tool record in the session history (spec §4.10 step 9) -----------------
+# History keeps one user and one assistant message per turn, and used to keep
+# only the reply text. A later turn then saw "the living room is at 18.6
+# degrees" with no reading behind it, and took its own real readings for
+# fabrications: on 2026-10-10 it "corrected" six genuine readings, and it
+# created a second watch because it believed the first was "only claimed".
+# The record notes what the turn actually ran, so the next turn can tell.
+TOOL_RECORD_CHARS = 400
+
+
+def with_tool_record(reply: str, calls: list[tuple[str, dict | None, bool]]) -> str:
+    """`reply` plus a one-line note of the tools the turn ran (name, main
+    argument, ✓/✗). Spoken words are left out: the reply already carries them."""
+    parts = []
+    for name, args, ok in calls:
+        if name in ("speak", "announce", "search_tools"):
+            continue
+        first = next((v for v in (args or {}).values() if isinstance(v, str) and v), "")
+        arg = " " + (first if len(first) <= 60 else first[:57] + "...") if first else ""
+        parts.append(f"{name}{arg} {'✓' if ok else '✗'}")
+    if not parts:
+        return reply
+    record = ", ".join(parts)
+    if len(record) > TOOL_RECORD_CHARS:
+        record = record[: TOOL_RECORD_CHARS - 3] + "..."
+    return f"{reply}\n(tools this turn: {record})"
 
 
 # --- Subagent prompt (spec §20) ---------------------------------------------

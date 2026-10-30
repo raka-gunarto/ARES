@@ -2,7 +2,8 @@
 
 Covers the SpeakerChannel (announce on an HA media_player only when someone is
 home), the WebChannel presence gate (decline when the browser stopped polling),
-and the router's SPEAKER-before-PUSH fallback ordering.
+the router's fallback (which never reaches the speaker), and the `announce`
+tool that says something aloud only when ARES chooses to.
 """
 from __future__ import annotations
 
@@ -270,7 +271,8 @@ class _Recorder(BaseChannel):
 
 
 @pytest.mark.asyncio
-async def test_router_speaker_before_push_when_home():
+async def test_router_never_falls_back_to_the_speaker():
+    """A reply while someone is home goes to their phone, not out loud."""
     sessions = SessionManager()
     router = ResponseRouter(sessions)
     web = _Recorder(ChannelType.WEB, succeed=False)  # abandoned session
@@ -282,22 +284,55 @@ async def test_router_speaker_before_push_when_home():
 
     await router.speak("primary", "msg")
 
-    assert speaker.delivered == ["msg"]
-    assert push.delivered == []  # stopped after speaker succeeded
+    assert speaker.delivered == []
+    assert push.delivered == ["msg"]
+    assert router.last_channel["primary"] == "push"
+
+
+# --- The announce tool ------------------------------------------------------
+
+
+async def _announce(services: dict, message: str = "Dinner is ready"):
+    from ares.plugins.tools.core_tools import Announce
+
+    class Ctx:
+        pass
+
+    ctx = Ctx()
+    ctx.services = services
+    return await Announce().run(ctx, message=message)
 
 
 @pytest.mark.asyncio
-async def test_router_speaker_declines_falls_to_push():
-    sessions = SessionManager()
-    router = ResponseRouter(sessions)
-    web = _Recorder(ChannelType.WEB, succeed=False)
-    speaker = _Recorder(ChannelType.SPEAKER, succeed=False)  # nobody home
-    push = _Recorder(ChannelType.PUSH, succeed=True)
-    for c in (web, speaker, push):
-        router.register(c)
-    sessions.touch("primary", ChannelType.WEB, None)
+async def test_announce_plays_on_the_speaker_when_home():
+    ha = FakeHA({"person.raka": "home"})
+    ch = SpeakerChannel(ha, ["person.raka"], "tts.piper",
+                        {"media_player_entity_id": "media_player.living_room_nest"})
+    result = await _announce({"announcers": [ch.announce], "presence": ch.anyone_home})
+    assert result.ok and len(ha.calls) == 1
 
-    await router.speak("primary", "msg")
 
-    assert speaker.delivered == ["msg"]
-    assert push.delivered == ["msg"]
+@pytest.mark.asyncio
+async def test_announce_declines_when_no_one_is_home():
+    ha = FakeHA({"person.raka": "not_home"})
+    ch = SpeakerChannel(ha, ["person.raka"], "tts.piper")
+    result = await _announce({"announcers": [ch.announce], "presence": ch.anyone_home})
+    assert not result.ok and "No one is home" in result.content and ha.calls == []
+
+
+@pytest.mark.asyncio
+async def test_announce_without_a_speaker_says_so():
+    result = await _announce({})
+    assert not result.ok and "speak" in result.content
+
+
+@pytest.mark.asyncio
+async def test_announce_refuses_the_ignore_sentinel():
+    played = []
+
+    async def announcer(msg):
+        played.append(msg)
+        return True
+
+    result = await _announce({"announcers": [announcer]}, "IGNORE")
+    assert not result.ok and played == []

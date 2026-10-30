@@ -1,6 +1,6 @@
 # ARES — Automated Request Execution System
 
-ARES is a self-hosted, always-on, event-driven personal AI agent. It receives events from pluggable sources (voice, Home Assistant, SIP, scheduler, CLI, the web dashboard), reasons about them with an LLM via an OpenAI-compatible API, keeps memory as human-editable markdown files, and maintains open tasks in SQLite for continuity. Replies route dynamically to whichever channel the user is currently on—voice, a Home Assistant speaker, text, push notification, or web. It can browse the web (a one-shot page fetch and a persistent browser you can watch and take over), and hand long work to bounded background subagents.
+ARES is a self-hosted, always-on, event-driven personal AI agent. It receives events from pluggable sources (voice, Home Assistant, SIP, scheduler, CLI, the web dashboard), reasons about them with an LLM via an OpenAI-compatible API, keeps memory as human-editable markdown files, and maintains open tasks in SQLite for continuity. Replies route dynamically to whichever channel the user is currently on—voice, text, push notification, or web—and ARES can choose to say something out loud on a Home Assistant speaker. It can browse the web (a one-shot page fetch and a persistent browser you can watch and take over), and hand long work to bounded background subagents.
 
 ## Requirements
 
@@ -74,7 +74,7 @@ pip install -e ".[dashboard]"
    - `scheduler` — time-based events and task reminders (enabled by default)
    - `push_ntfy` — push notifications via ntfy
    - `home_assistant` — Home Assistant integration
-   - `speaker` — announce replies on a Home Assistant speaker when someone is home (needs `home_assistant`)
+   - `speaker` — lets ARES say things out loud on a Home Assistant speaker (the `announce` tool and safety alarms) when someone is home (needs `home_assistant`)
    - `voice` — voice pipeline (speech recognition + TTS)
    - `sip` — SIP calling and messaging
    - `time_tools` — weather, calendar (read/add)
@@ -134,7 +134,7 @@ ARES is built around **an async event bus** and a **priority model**:
 - **NORMAL** events (conversation, reminders) flow through the agent's LLM loop.
 - **LOW** events are dropped when the dispatcher is busy, preventing queue buildup.
 
-**One session per user** persists across all channels, so a conversation can start on voice, pause, and continue over text—the agent retains context. The **ResponseRouter** decides *where* to send a reply based on the channel the user last spoke on; if that channel can't deliver (e.g. the dashboard tab is closed) it falls back to a Home Assistant speaker when someone is home, then push, then the console. The agent loop has a tool-call budget; it reasons via the LLM, discovers domain-specific tools with `search_tools`, and executes them.
+**One session per user** persists across all channels, so a conversation can start on voice, pause, and continue over text—the agent retains context. The **ResponseRouter** decides *where* to send a reply based on the channel the user last spoke on; if that channel can't deliver (e.g. the dashboard tab is closed) it falls back to push, then the console. It never falls back to the house speaker: ARES speaks aloud only when it calls `announce`. The agent loop has a tool-call budget; it reasons via the LLM, discovers domain-specific tools with `search_tools`, and executes them.
 
 Work that would hold up the conversation goes to **background subagents**: bounded, read-only LLM loops that report back as events. Every agent turn is written to a live **activity trace** the dashboard can tail.
 
@@ -234,7 +234,7 @@ If your plugin needs shared state (e.g., an API client), place it in `services["
 
 - Plugins import from `ares.core` only; core never imports from plugins.
 - Sources call `self.emit()` with `type`, `payload`, and `priority` to publish; the event bus routes automatically.
-- Channels' `deliver()` method returns `bool`; if False, ARES tries the fallbacks (SPEAKER, then PUSH, then CONSOLE).
+- Channels' `deliver()` method returns `bool`; if False, ARES tries the fallbacks (PUSH, then CONSOLE).
 - Plugins never import each other; a collaborator from another plugin arrives through `services`.
 - Tool exceptions are logged; return `ToolResult(ok=False, content="error")` for user-facing failures.
 - All I/O is async (`asyncio`). No threads except where a library forces it.

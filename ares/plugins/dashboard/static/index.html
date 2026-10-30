@@ -762,9 +762,7 @@ function PresenceBadge(status){
   const home=status.home; // true / false / null(unknown)
   let where,cls;
   if(status.web_present){ where="reaches you on web"; cls="pill ok"; }
-  else if(home===true){ where="→ speaker (you're home)"; cls="pill"; }
-  else if(home===false){ where="→ push (you're away)"; cls="pill"; }
-  else { where="→ push"; cls="pill"; }
+  else { where="→ push"+(home===true?" (you're home)":home===false?" (you're away)":""); cls="pill"; }
   const last=status.last_channel;
   const lastLbl={web:"web",speaker:"speaker",push:"push",console:"console",
     sip_message:"SMS",sip_call:"call",voice:"voice"}[last]||last;

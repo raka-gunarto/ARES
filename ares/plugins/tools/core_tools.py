@@ -3,6 +3,9 @@ from __future__ import annotations
 from ares.core.prompt import is_ignore
 from ares.core.tasks.store import check_schedule
 from ares.core.tool import BaseTool, ToolContext, ToolResult
+from ares.core.utils.logging import get_logger
+
+log = get_logger(__name__)
 
 
 # --- Duplicate-task guard ---------------------------------------------------
@@ -76,6 +79,53 @@ class Speak(BaseTool):
             )
         await ctx.router.speak(ctx.user_id, message)
         return ToolResult(ok=True, content="Delivered.")
+
+
+class Announce(BaseTool):
+    """Say something out loud in the house, when ARES judges it worth it."""
+
+    name = "announce"
+    description = (
+        "Say a message OUT LOUD on the speakers in the house, for everyone in the "
+        "room to hear. `speak` never does this: it replies on the person's own "
+        "channel (chat, call, or their phone). Use announce only when hearing it "
+        "aloud now is worth interrupting the room for — something time-critical "
+        "while they are home, or a request to say it out loud. Never for routine "
+        "status, progress, or anything at night unless it is urgent."
+    )
+    keywords = ()
+    parameters = {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string"}
+        },
+        "required": ["message"]
+    }
+    core = True
+
+    async def run(self, ctx: ToolContext, **kwargs) -> ToolResult:
+        """Play the message on every house announcer if someone is home."""
+        message = kwargs["message"]
+        if is_ignore(message):
+            return ToolResult(ok=False, content="IGNORE is a control word, never spoken.")
+        announcers = ctx.services.get("announcers") or []
+        if not announcers:
+            return ToolResult(ok=False, content="No house speaker is set up. Use speak instead.")
+        presence = ctx.services.get("presence")
+        if presence is not None and not await presence():
+            return ToolResult(
+                ok=False,
+                content="No one is home, so nothing was played. Use speak or send_notification.",
+            )
+        played = 0
+        for announce in announcers:
+            try:
+                played += bool(await announce(message))
+            except Exception:
+                log.exception("announce: an announcer failed")
+        if not played:
+            return ToolResult(ok=False, content="The speaker did not play it. Use speak instead.")
+        return ToolResult(ok=True, content="Announced out loud in the house.")
 
 
 class SendNotification(BaseTool):
@@ -317,6 +367,7 @@ class CloseTask(BaseTool):
 
 CORE_TOOLS: list[BaseTool] = [
     Speak(),
+    Announce(),
     SendNotification(),
     SearchTools(),
     GetActiveTasks(),

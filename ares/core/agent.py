@@ -13,7 +13,7 @@ if typing.TYPE_CHECKING:
 from ares.core.event import Event
 from ares.core.llm.client import LLMClient
 from ares.core.prompt import (
-    PROGRESS_NUDGE, RULES_REMINDER, WRAP_UP_NOTE, build_system_prompt, is_ignore,
+    PROGRESS_NUDGE, RULES_REMINDER, WRAP_UP_NOTE, build_system_prompt, is_ignore, with_tool_record,
 )
 from ares.core.router import ResponseRouter
 from ares.core.session import SessionManager
@@ -245,6 +245,7 @@ class Agent:
             quiet_rounds, nudged = 0, False
             spoke = False
             spoken_texts: list[str] = []
+            ran: list[tuple[str, dict | None, bool]] = []  # for the history record
             updates: set[str] = set()  # spoken in answer to a nudge: progress, not answers
             notified = False
             final_text = ""
@@ -304,12 +305,12 @@ class Agent:
 
                     self.tracer.emit("tool", event_id=event.id, name=name, arguments=args,
                                      ok=result.ok, result=result.content)
+                    ran.append((name, args, result.ok))
 
-                    if name == "speak" and result.ok:
+                    if name in ("speak", "announce") and result.ok:
                         spoke = True
                         spoken_texts.append((args or {}).get("message") or "")
-                    if name == "send_notification" and result.ok:
-                        notified = True
+                    notified = notified or (name == "send_notification" and result.ok)
 
                     if name == "search_tools" and args is not None:
                         for t in self.registry.search(args.get("query", "")):
@@ -385,8 +386,7 @@ class Agent:
             # STEP 9
             self.sessions.append_history(event.user_id, "user", event_text)
             self.sessions.append_history(
-                event.user_id, "assistant", final_text or "<acted via tools>"
-            )
+                event.user_id, "assistant", with_tool_record(final_text or "<acted via tools>", ran))
 
         except Exception as e:
             log.exception("agent.handle failed for event %s", event.id)

@@ -315,6 +315,48 @@ async def test_a_turn_near_the_time_cap_stops_and_reports_where_it_got_to():
     assert sessions.get("primary").history[-1]["content"] == report["content"]
 
 
+async def test_history_records_the_tools_a_turn_ran():
+    """The next turn must see that a reading was taken, or it takes its own real
+    readings for fabrications (§4.10 step 9)."""
+    llm = FakeLLM([
+        make_tool_call_message("c1", "get_active_tasks", {}),
+        make_tool_call_message("c2", "create_task", {"type": "monitoring", "title": "Heating off at 20 C"}),
+        make_tool_call_message("c3", "speak", {"message": "Watching it."}),
+        {"role": "assistant", "content": "Watching it."},
+    ])
+    agent, _channel, sessions = build_agent(llm)
+    await agent.handle(make_cli_event("turn the heating off at 20"))
+    last = sessions.get("primary").history[-1]["content"]
+    assert last == "Watching it.\n(tools this turn: get_active_tasks ✓, create_task monitoring ✓)"
+
+
+def test_tool_record_is_bounded_and_skips_speech():
+    from ares.core.prompt import TOOL_RECORD_CHARS, with_tool_record
+
+    assert with_tool_record("hi", [("speak", {"message": "hi"}, True)]) == "hi"
+    many = [("browser", {"action": "open", "url": "https://example.org/" + "x" * 80}, True)] * 20
+    record = with_tool_record("ok", many).split("\n", 1)[1]
+    assert len(record) <= TOOL_RECORD_CHARS + len("(tools this turn: )")
+    assert with_tool_record("r", [("get_home_state", {"entity_id": "climate.x"}, False)]).endswith(
+        "get_home_state climate.x ✗)")
+
+
+async def test_announcing_counts_as_speaking():
+    """An answer said aloud is not sent again to the person's own channel."""
+    llm = FakeLLM([make_tool_call_message("c1", "announce", {"message": "Dinner's ready"}),
+                   {"role": "assistant", "content": "Dinner's ready"}])
+    agent, channel, _sessions = build_agent(llm)
+    played = []
+
+    async def announcer(msg):
+        played.append(msg)
+        return True
+
+    agent.services["announcers"] = [announcer]
+    await agent.handle(make_cli_event("tell everyone dinner is ready"))
+    assert played == ["Dinner's ready"] and channel.messages == []
+
+
 def test_wrap_up_leaves_room_under_the_dispatcher_cap():
     from ares.core.agent import TURN_WRAP_UP_S
     from ares.core.dispatcher import DEFAULT_TURN_TIMEOUT_S

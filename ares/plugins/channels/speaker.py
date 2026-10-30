@@ -1,11 +1,11 @@
 """Speaker channel: announce ARES's speech on a Home Assistant media_player.
 
-This is the "you're home but not at the dashboard" delivery path. When the
-router can't reach the user on their active channel (e.g. the web session is
-abandoned), it tries SPEAKER before PUSH: if a configured person is home, ARES
-speaks the message aloud on a room speaker via HA text-to-speech; if no one is
-home, or HA is unreachable, deliver() returns False and the router falls
-through to PUSH (the user's phone).
+ARES speaks aloud only when it chooses to: the `announce` tool and the safety
+handlers call `announce()`. The router no longer falls back to this channel
+(it once did, and every reply made while someone was home was said out loud,
+overnight watch reports included). deliver() remains for a direct caller: it
+plays the message only if a configured person is home, and returns False
+otherwise or when HA is unreachable.
 
 The Home Assistant service is injected (duck-typed), never imported, so this
 plugin does not depend on the HA source plugin.

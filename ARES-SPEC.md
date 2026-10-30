@@ -1,4 +1,4 @@
-# ARES — Implementation Specification v1.23
+# ARES — Implementation Specification v1.24
 
 **ARES: Automated Request Execution System.** A self-hosted, always-on, event-driven
 personal AI agent. This document is the complete, authoritative specification for the
@@ -417,7 +417,8 @@ class ResponseRouter:
 
 `speak`: read the user's session **at delivery time**, pick the channel matching
 `session.active_channel`, call `deliver`. On failure or missing channel, fall
-back in order: `SPEAKER` → `PUSH` → `CONSOLE`. `notify`: always the `PUSH`
+back in order: `PUSH` → `CONSOLE`. `SPEAKER` is never a fallback (v1.24):
+speaking aloud in the house is ARES's own choice, made with the `announce` tool. `notify`: always the `PUSH`
 channel, falling back to `CONSOLE`. Room resolution for voice happens **inside**
 the voice channel at delivery time using `session.current_room`.
 
@@ -434,16 +435,18 @@ serves it cursor-based: the browser polls from the last sequence it saw
 (persisted client-side) and receives everything after it plus the new cursor. A
 reply committed to a poll that never reaches a frozen tab is thus recoverable —
 the tab replays from its cursor on reconnect — closing the residual race left by
-the presence gate alone. `SPEAKER` (delivered by an optional plugin
-on `media_player` TTS via Home Assistant) sits ahead of `PUSH`: it announces the
-message aloud when a configured presence entity reads `home`, and returns
-`False` when no one is home so delivery continues to `PUSH` (the user's phone).
-The `SPEAKER` plugin receives the Home Assistant service by injection and is
-wired only when Home Assistant is enabled; with no `speaker` config block it is
-never registered and the chain is `PUSH` → `CONSOLE` as before. Besides `deliver`,
-the speaker channel exposes `anyone_home()` (the presence check, also used by
-`/api/status`) and `announce(message)`, which speaks unconditionally — the path
-the safety handlers use (§7.7).
+the presence gate alone. `SPEAKER` (an optional plugin speaking on a
+`media_player` through Home Assistant TTS) is registered but is not in the
+fallback chain. As a fallback ahead of `PUSH` it said every reply aloud while
+anyone was home, scheduled watch reports through the night included. Its
+`deliver` still plays a message only when a configured presence entity reads
+`home`. The plugin receives the Home Assistant service by injection and is
+wired only when Home Assistant is enabled and a `speaker` config block is
+present. It exposes `anyone_home()` (the presence check, used by `/api/status`
+and the `announce` tool as `services["presence"]`) and `announce(message)`,
+which speaks unconditionally. `announce` is appended to
+`services["announcers"]`, the list the safety handlers (§7.7) and the
+`announce` tool call.
 
 ### 4.6 `core/session.py`
 
@@ -664,7 +667,15 @@ final call; a test pins the margin at 120 s or more.
    - If the event was ambient and no speak/notify was called: do nothing
      (empty/short final text means the agent chose silence). Log it.
 9. `sessions.append_history(user, "user", event_message_text)` and
-   `append_history(user, "assistant", final_text or "<acted via tools>")`.
+   `append_history(user, "assistant", with_tool_record(final_text or "<acted via tools>", ran))`.
+   `ran` lists each tool call of the turn as `(name, args, ok)`.
+   `prompt.with_tool_record` appends one line,
+   `(tools this turn: get_home_state climate.living_room ✓, create_task monitoring ✓)`:
+   the name, the first non-empty string argument (cut to 60 chars), and ✓/✗.
+   It leaves out `speak`, `announce` and `search_tools`, caps the line at 400
+   chars, and adds nothing when no other tool ran. Without it, a later turn saw
+   its earlier answers with nothing behind them and took real readings for
+   fabrications (v1.24).
 10. Entire body wrapped in try/except: log exception with event id; if
     user-initiated, attempt `router.speak(user, "Something went wrong handling that.")`.
 
@@ -704,9 +715,15 @@ RULES block (verbatim; byte-identical in `prompt.py` and `ARES-SYSTEM-PROMPT.md`
 HOW YOU ACT
 - You act only through tools. Text you write is not delivered — use `speak` to
   talk to the person. If an ambient event needs no action, reply with one word: IGNORE.
-- When a turn needs several tool calls or will take a noticeable moment, call
-  `speak` in that same turn to tell the person what you are doing, so they are
-  not left in silence while you work.
+- When the person is waiting on you and the turn needs several tool calls or
+  will take a noticeable moment, call `speak` in that same turn to tell them
+  what you are doing. Ambient events (task checks, home changes) have no one
+  waiting: work without commentary, and speak only when there is news: a watch
+  that fired, a real change, or a problem the person must act on. "Still
+  nothing" is not news.
+- `speak` replies on the person's own channel. `announce` says it out loud in
+  the house: use it only when hearing it now is worth interrupting the room,
+  and never at night unless it is urgent.
 - On a SIP call, always acknowledge with `speak` on your first turn, in the same
   turn as your tool calls — dead air on a live call reads as a dropped line.
 - Use `search_tools` to find capabilities you don't currently hold: memory, home
@@ -866,6 +883,7 @@ is registered only when the `browser` plugin is enabled (in prod, only once
 | name | parameters (JSON Schema properties) | behaviour |
 |---|---|---|
 | `speak` | `message: string` (required) | `await ctx.router.speak(ctx.user_id, message)`. Returns `ok=True, "Delivered."` or `ok=False` on router failure. |
+| `announce` | `message: string` (required) | Says the message aloud in the house: calls every `ctx.services["announcers"]` entry. `ok=False` with a reason when there are none, when `services["presence"]` says no one is home (nothing is played), when none played it, or for the IGNORE sentinel; else `"Announced out loud in the house."` The agent counts a successful call as speaking (step 8). |
 | `send_notification` | `message: string` (required) | `await ctx.router.notify(...)`. |
 | `search_tools` | `query: string` (required) | `ctx.registry.search(query)`. Content = one line per match: `name — description`. Agent adds matches to the active set (§4.10 step 7). Empty → `"No tools matched. Try different words."` |
 | `get_active_tasks` | none | `ctx.tasks.list_open(ctx.user_id)` rendered one per line with id, type, title, due_at. |
@@ -1022,6 +1040,10 @@ snapshot hid:
   on a custom dropdown now points to `click_text`.
 - *Keyboard.* `Space` joins the key list; it ticks a focused checkbox or presses a
   focused button (`Enter` does neither for a checkbox).
+- *Pages still rendering (v1.24).* A script-built page is empty when its load
+  event fires. When a snapshot has no text and no refs, the tool reads again
+  every second for up to `BLANK_WAIT_S` (8 s) before returning it. A watch had
+  reported "the page is blank" every half hour through a night.
 
 Collection stops at 20× the cap on pathological pages. On an 18,000-element page
 the snapshot takes about 160 ms (14 ms before, when it stopped at the cap).
@@ -1910,7 +1932,7 @@ background runs, §20), Browser (live view of the persistent browser with
 launch/close, URL bar, click/scroll/typing on the image, a hidden-by-default
 text box for passwords, and take control / hand back to ARES), Approvals (pending priv requests with Approve/Deny buttons
 + reason/command shown), PRs (open self-edit PRs, links to GitHub). A header
-badge shows where a reply would land right now (web presence / speaker / push)
+badge shows where a reply would land right now (web presence / push, with whether anyone is home)
 and the channel that received the last one, from `/api/status`. Token entered
 once, kept in `localStorage`.
 
@@ -2115,7 +2137,7 @@ Allowed: `search_tools`, `memory_grep`, `memory_read`, `memory_list`,
 `get_weather`, `get_calendar`, `read_source`, `get_privilege_requests`,
 `get_pr_status`, `fetch_page`, and the subagent-only `report_progress`.
 
-Excluded, deliberately: everything that speaks (`speak`, `send_notification`,
+Excluded, deliberately: everything that speaks (`speak`, `announce`, `send_notification`,
 `place_call`, `end_call`, `send_sip_message`), everything that acts on the house
 (`control_device`), everything that mutates durable state (`memory_write`,
 `memory_delete`, `create_task`, `close_task`, `update_task`), everything that
@@ -2475,5 +2497,27 @@ so neither cost nor cache hits could be seen. The system prompt is built once
 per turn and the tool loop only appends, so every round after the first can
 re-read the turn so far at a tenth of the input price. No new dependency; the
 RULES block is unchanged.
+
+v1.24 (operator-authorised, including the RULES change) stops ARES talking out
+loud by default and makes ambient turns quiet (§4.5, §4.10, §6, §6.6). Asked:
+"I don't want it to default to speaker when I'm at home for replies, ARES must
+decide if it wants to talk to the speaker", and to improve ARES from the logs.
+Over three weeks of trace, 122 `speak` calls came from scheduled task checks
+and 8 from home state changes. None had anyone waiting, and every one went
+to the room speaker whenever someone was home. That included a Science Museum
+watch every half hour from 01:09 to 05:09 BST, each saying "Checking the page
+now" and then "still blank". Changes:
+- The router no longer falls back to `SPEAKER`.
+- A new core `announce` tool says something aloud when ARES judges it worth it.
+- RULES now limit "say what you are doing" to turns where the person is
+  waiting. It adds that ambient events speak only with news, and says when to
+  use `announce`.
+- Session history now records the tools a turn ran. On 2026-10-10 ARES
+  "corrected" six real thermostat readings as "not real checks" and created a
+  duplicate watch it believed was "only claimed": history had kept its answers
+  but nothing of the readings behind them.
+- The browser waits for a script-built page to render instead of reporting it
+  blank.
+No new dependency.
 
 *End of specification.*

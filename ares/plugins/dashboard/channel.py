@@ -124,7 +124,7 @@ class WebChannel(BaseChannel):
         The message is *always* recorded (with a fresh sequence number) so a
         reconnecting browser can replay it. The return value reports only
         whether a browser is present *now*: when it is not, the router falls
-        through to a channel that reaches the user (speaker/push), while the
+        through to a channel that reaches the user (push), while the
         buffered copy still lets the dashboard show the reply in the transcript
         when it is next opened.
 

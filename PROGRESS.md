@@ -1,16 +1,18 @@
 # ARES Build Progress
 
-Spec: `ARES-SPEC.md` v1.23. Read spec §0 (rules) before every session. This file
+Spec: `ARES-SPEC.md` v1.24. Read spec §0 (rules) before every session. This file
 is the single source of truth for build state. Protocol: spec §11. The
 deployment/security layer is M10–M13; read spec §14 before touching any of it.
 
 ## Current
 
-*** ALL COMPLETE — M0–M13 + v1.2 … v1.23. Nothing is in progress. ***
+*** ALL COMPLETE — M0–M13 + v1.2 … v1.24. Nothing is in progress. ***
 
-Last change: v1.23 (operator-authorised) — prompt caching for Anthropic models
-(top-level `cache_control`) and token usage (prompt, cached, cache writes,
-completion, cost) on every `reply` trace entry, shown in the dashboard trace.
+Last change: v1.24 (operator-authorised, RULES change included) — ARES no
+longer talks out loud by default: the router never falls back to the speaker,
+and a new `announce` tool speaks aloud when ARES chooses. Ambient turns (task
+checks, home changes) stay quiet unless there is news. History records the
+tools each turn ran, and the browser waits for script-built pages to render.
 Details under `## History`.
 
 Next action: none queued. New work starts from an operator request; spec changes
@@ -33,6 +35,39 @@ Open (non-blocking):
    containment.
 
 ## History
+
+### v1.24 — speaker by choice, quiet ambient turns (2026-10-30)
+
+Asked: "I don't want it to default to speaker when I'm at home for replies,
+ARES must decide if it wants to talk to the speaker", plus "make it better from
+the logs". The trace from 2026-10-09 to 2026-10-30 showed:
+- 130 `speak` calls from ambient events (122 task checks, 8 home changes).
+  Every one went to the room speaker while someone was home, since `speak`
+  fell back web → SPEAKER → PUSH. A Science Museum watch announced itself
+  every half hour from 01:09 to 05:09 BST, usually twice: "Checking the page
+  now", then "still blank".
+- The "blank" pages were mostly not blank: the browser read the single-page
+  app before it rendered.
+- On 2026-10-10 ARES called six genuine `get_home_state` readings "not real
+  checks", and created a duplicate heating watch it thought it had "only
+  claimed". Session history kept only the reply text, never the tools behind
+  it.
+
+Changes:
+- `ResponseRouter.speak` falls back PUSH → CONSOLE only.
+- New core `announce` tool, using `services["announcers"]` and
+  `services["presence"]`. It is forbidden to subagents and counts as speaking
+  in step 8.
+- RULES (operator-approved wording): progress updates only when the person is
+  waiting; ambient turns speak only with news; when to use `announce`.
+- Step 9 appends `with_tool_record(...)` to the assistant history entry.
+- The browser snapshot re-reads for up to 8 s while a page has no text and no
+  refs.
+- The dashboard presence badge no longer says "→ speaker".
+
+Tests: router, `announce`, history record, blank-page wait. Not changed: the
+TV-licence `click_text` miss (2026-10-23). The trace cut the snapshot, so there
+was nothing to reproduce from.
 
 ### v1.23 — prompt caching and usage tracing (2026-10-09)
 

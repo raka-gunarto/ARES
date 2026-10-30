@@ -164,7 +164,7 @@ def build_app(
         # This open poll is the web channel's liveness signal: while it is
         # connected the user counts as present, so speak() delivers here; once
         # the last poll closes (tab backgrounded/closed) speak() falls through
-        # to speaker/push. Bracket the wait so the waiter count is accurate even
+        # to push. Bracket the wait so the waiter count is accurate even
         # if the client disconnects (CancelledError still runs the finally).
         web_channel.poll_started("primary")
         try:

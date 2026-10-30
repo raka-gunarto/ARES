@@ -55,6 +55,7 @@ SUBAGENT_ALLOWED_TOOLS = frozenset(
 SUBAGENT_FORBIDDEN_TOOLS = frozenset(
     {
         "speak",
+        "announce",
         "send_notification",
         "place_call",
         "end_call",
