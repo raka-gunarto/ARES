@@ -291,3 +291,37 @@ async def test_browser_live_view_flow(tmp_path):
         assert (await c.post("/api/browser/control", json={"active": True})).json()["operator_in_control"]
         assert not (await c.post("/api/browser/close")).json()["running"]
         assert browser.operator is False
+
+
+class Rendering(FakeSession):
+    """A script-built page: blank for the first `blank_reads` snapshots."""
+
+    def __init__(self, blank_reads):
+        super().__init__()
+        self.blank_reads = blank_reads
+        self.settles = 0
+
+    async def evaluate(self, expr):
+        if self.blank_reads:
+            self.blank_reads -= 1
+            return {"url": "https://93.184.215.14/", "title": "", "refs": 0, "text": ""}
+        return SNAP
+
+    async def settle(self, seconds=0.8):
+        self.settles += 1
+
+
+async def test_a_page_still_rendering_is_read_once_it_has_content():
+    """The Science Museum watch read a single-page app before it drew anything
+    and reported "the page is blank" every half hour through the night."""
+    session = Rendering(blank_reads=3)
+    result = await Browser(session).run(None, action="open", url="https://93.184.215.14/")
+    assert result.ok and "[1] link" in result.content and session.settles == 3
+
+
+async def test_a_page_that_stays_blank_is_reported_after_a_bounded_wait():
+    from ares.plugins.tools.browser_tool import BLANK_WAIT_S
+
+    session = Rendering(blank_reads=1000)
+    result = await Browser(session).run(None, action="open", url="https://93.184.215.14/")
+    assert "(no visible text)" in result.content and session.settles == int(BLANK_WAIT_S)

@@ -34,6 +34,7 @@ ACTIONS = ("open", "read", "click", "click_text", "type", "select", "key", "scro
            "forward", "close")
 ACTION_TIMEOUT_S = 60
 SCROLL_PX = 700
+BLANK_WAIT_S = 8.0  # how long a page with no text and no controls gets to render
 _STALE_REF = (
     "no element with ref {ref} on the current page — refs change whenever the page "
     "changes. The page as it is now, with fresh refs, is below"
@@ -200,5 +201,13 @@ class Browser(BaseTool):
             # Usually "execution context destroyed": a navigation was still
             # under way. Let it finish and read once more.
             await self.session.wait_loaded(max_s=10)
+            snap = await self.session.evaluate(SNAPSHOT_JS)
+        # A script-built page has nothing in it when the load event fires. Read
+        # too early, it looked blank, and a watch reported "the page is blank"
+        # every half hour through a night (2026-10-09). Give it time to render.
+        waited = 0.0
+        while snap is not None and not snap.get("text") and not snap.get("refs") and waited < BLANK_WAIT_S:
+            await self.session.settle(1.0)
+            waited += 1.0
             snap = await self.session.evaluate(SNAPSHOT_JS)
         return format_snapshot(snap or {})
